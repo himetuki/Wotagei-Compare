@@ -1,0 +1,22 @@
+# 工具与环境
+.pixi/
+.env
+.env.*
+!.env.example
+.claude/
+.agents/
+.playwright-mcp/
+node_modules/
+dist/
+android/app/build/
+android/.gradle/
+android/local.properties
+coverage/
+.DS_Store
+Thumbs.db
+
+# 编辑器与临时文件
+.vscode/
+.idea/
+*.apk
+*.aab
