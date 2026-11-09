@@ -1,0 +1,44 @@
+schema: spec-driven
+
+context: |
+  Language: zh-CN
+  All artifacts must be written in zh-CN.
+  Keep OpenSpec structural headings and SHALL/MUST keywords in English.
+
+  项目：Wotagei-Compare，面向 WOTA 艺练习者的移动端同台视频对比与慢放扒技软件（Android 优先原生跨平台应用）。
+  所有产物必须是纯 Markdown，Claude Code、Codex 或 pi 均能直接读取，不允许依赖某个工具专有的格式。
+
+  以下约束 Agent 无法从代码里推断，必须遵守：
+
+  - 用户需求文档（docs/requirements/）是只读来源。实现遇到困难时改规格，
+    不允许迁就实现去擅自篡改原始需求记录。
+  - 验收标准必须写成可观测的检查方式——实际构建输出、黑盒操作流验证、
+    可复现的命令输出。不要写成防御性单元测试或哈希校验。
+  - 代码选能满足当前需求的最简单实现，不保留向后兼容，不写无意义的抽象与配置层。
+
+rules:
+  design:
+    - 每条有架构意义的决策，必须在 docs/decisions/ 另存一条 AgDR，
+      并在 design.md 的决策小节用相对链接指过去。只写 design.md 不写 AgDR，
+      视为这次变更没做完。
+    - 算「有架构意义」的：选型、数据结构、几何/时间轴映射算法、接口边界、迁移策略、
+      被否决的方案、为了绕开某个坑而故意写得「不干净」的地方。
+      不算的：改命名、调参数、纯局部实现细节。
+    - AgDR 的 status 只有三种：proposed（规划时写下）、executed（实现时确实这么做了）、
+      superseded（被后来的记录取代）。被推翻的记录不删除，改成 superseded 并指向新记录。
+    - 模板见 docs/decisions/_template.md。文件名 AgDR-NNNN-短标题.md，
+      编号全局递增，不复用已用过的号。
+
+operations:
+  apply:
+    guidance:
+      - 实现过程中新产生的架构决策，同样要在 docs/decisions/ 写一条 AgDR，
+        status 写 executed。不要只在代码里体现，也不要说「回头补」。
+      - 规划阶段已经写下的 AgDR，实现完成后把 status 从 proposed 改成 executed。
+        如果实现时改了主意，原记录改成 superseded，另写一条新的，不要就地改写。
+      - 实现时发现 specs 描述的行为和实际需要的不一致，不要就地绕过：
+        用 sync 把偏离同步回 specs，再继续。
+      - 全部任务完成后，主动提醒用户运行 archive，不要静默结束。
+  archive:
+    guidance:
+      - 归档前确认本次变更产生的每条 AgDR 都已离开 proposed 状态。
