@@ -484,7 +484,7 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
       {/* 底部找帧时间轴栏 */}
       <div
         className="bottom-bar"
-        style={{ flexDirection: 'row', alignItems: 'center', height: '42px', gap: '10px' }}
+        style={{ flexDirection: 'row', alignItems: 'center', minHeight: '42px', gap: '10px' }}
       >
         <button type="button" onClick={togglePlay} className="btn">
           {isPlaying ? <Pause size={13} /> : <Play size={13} />}

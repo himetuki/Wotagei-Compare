@@ -493,23 +493,25 @@ export const Workbench: React.FC<WorkbenchProps> = ({
       {/* 顶部工作台参数栏 */}
       <div className="toolbar-row">
         {/* 左：对比模式切换与视口复位 */}
-        <div className="control-group">
+        <div className="control-group" style={{ gap: '4px' }}>
           <div className="seg-group">
             <button
               type="button"
               onClick={() => handleModeChange('overlay')}
               className={`seg-btn ${mode === 'overlay' ? 'active' : ''}`}
+              style={{ padding: '0 6px' }}
             >
               <Layers size={12} />
-              <span>半透明叠加</span>
+              <span>叠加</span>
             </button>
             <button
               type="button"
               onClick={() => handleModeChange('split-screen')}
               className={`seg-btn ${mode === 'split-screen' ? 'active' : ''}`}
+              style={{ padding: '0 6px' }}
             >
               <Columns2 size={12} />
-              <span>左右分区</span>
+              <span>分区</span>
             </button>
           </div>
 
@@ -518,21 +520,22 @@ export const Workbench: React.FC<WorkbenchProps> = ({
               type="button"
               onClick={() => setViewport({ scale: 1, offsetX: 0, offsetY: 0 })}
               className="btn"
+              style={{ padding: '0 6px' }}
             >
               <RotateCcw size={12} />
-              <span className="mono-num">视口 {viewport.scale.toFixed(1)}x</span>
+              <span className="mono-num">{viewport.scale.toFixed(1)}x</span>
             </button>
           )}
         </div>
 
         {/* 中：声音输出源与双通道独立镜像 */}
-        <div className="control-group">
+        <div className="control-group" style={{ gap: '4px' }}>
           <div className="seg-group">
             {(
               [
                 { id: 'metronome', label: '节拍器' },
-                { id: 'video1', label: 'CH1 原声' },
-                { id: 'video2', label: 'CH2 原声' },
+                { id: 'video1', label: 'CH1' },
+                { id: 'video2', label: 'CH2' },
                 { id: 'mute', label: '静音' },
               ] as { id: SoundSource; label: string }[]
             ).map((item) => (
@@ -541,6 +544,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
                 type="button"
                 onClick={() => setSoundSource(item.id)}
                 className={`seg-btn ${soundSource === item.id ? 'active' : ''}`}
+                style={{ padding: '0 6px' }}
               >
                 {item.label}
               </button>
@@ -553,6 +557,8 @@ export const Workbench: React.FC<WorkbenchProps> = ({
             type="button"
             onClick={() => toggleMirror(1)}
             className={`btn ${mirror1 ? 'btn-active' : ''}`}
+            style={{ padding: '0 6px' }}
+            title="视频 1 水平镜像"
           >
             <FlipHorizontal2 size={12} />
             <span>CH1</span>
@@ -561,6 +567,8 @@ export const Workbench: React.FC<WorkbenchProps> = ({
             type="button"
             onClick={() => toggleMirror(2)}
             className={`btn ${mirror2 ? 'btn-active' : ''}`}
+            style={{ padding: '0 6px' }}
+            title="视频 2 水平镜像"
           >
             <FlipHorizontal2 size={12} />
             <span>CH2</span>
@@ -568,7 +576,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
         </div>
 
         {/* 右：进入导出页 */}
-        <div className="control-group">
+        <div className="control-group" style={{ flexShrink: 0 }}>
           <button
             type="button"
             onClick={() => {
@@ -580,6 +588,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
               setIsExportPageOpen(true);
             }}
             className="btn btn-accent"
+            style={{ padding: '0 10px' }}
           >
             <Download size={13} />
             <span>导出片段</span>
@@ -597,6 +606,8 @@ export const Workbench: React.FC<WorkbenchProps> = ({
           justifyContent: 'center',
           backgroundColor: 'var(--bg-canvas)',
           minHeight: 0,
+          paddingLeft: 'max(8px, var(--safe-left))',
+          paddingRight: 'max(8px, var(--safe-right))',
         }}
       >
         <canvas
@@ -640,30 +651,30 @@ export const Workbench: React.FC<WorkbenchProps> = ({
         </div>
 
         {/* 第二行：播放步进、七档慢放、叠加透明度 */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div className="control-group">
-            <button type="button" onClick={() => seekToTau(0)} className="btn">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+          <div className="control-group" style={{ gap: '4px' }}>
+            <button type="button" onClick={() => seekToTau(0)} className="btn" style={{ padding: '0 8px' }}>
               <Crosshair size={12} />
-              <span className="mono-num">锚点 0.00s</span>
+              <span>锚点</span>
             </button>
 
-            <button type="button" onClick={togglePlay} className="btn btn-accent">
+            <button type="button" onClick={togglePlay} className="btn btn-accent" style={{ padding: '0 9px' }}>
               {isPlaying ? <Pause size={13} /> : <Play size={13} />}
               <span>{isPlaying ? '暂停' : '播放'}</span>
             </button>
 
-            <button type="button" onClick={() => stepFrame(-1)} className="btn">
+            <button type="button" onClick={() => stepFrame(-1)} className="btn" style={{ padding: '0 6px' }}>
               <ChevronLeft size={13} />
               <span>1F</span>
             </button>
-            <button type="button" onClick={() => stepFrame(1)} className="btn">
+            <button type="button" onClick={() => stepFrame(1)} className="btn" style={{ padding: '0 6px' }}>
               <span>1F</span>
               <ChevronRight size={13} />
             </button>
           </div>
 
-          <div className="control-group">
-            <span className="mono-muted">RATE</span>
+          <div className="control-group" style={{ gap: '4px' }}>
+            <span className="mono-muted" style={{ fontSize: '11px' }}>倍速</span>
             <div className="seg-group">
               {SLOW_MOTION_RATES.map((rate) => (
                 <button
@@ -671,6 +682,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
                   type="button"
                   onClick={() => handleRateChange(rate)}
                   className={`seg-btn mono-num ${slowMotionRate === rate ? 'active' : ''}`}
+                  style={{ padding: '0 5px', fontSize: '10.5px' }}
                 >
                   {rate}x
                 </button>
@@ -679,8 +691,8 @@ export const Workbench: React.FC<WorkbenchProps> = ({
           </div>
 
           {mode === 'overlay' ? (
-            <div className="control-group">
-              <span className="mono-muted" style={{ color: 'var(--ch1)' }}>
+            <div className="control-group" style={{ gap: '4px', flexShrink: 0 }}>
+              <span className="mono-muted" style={{ color: 'var(--ch1)', fontSize: '11px' }}>
                 CH1
               </span>
               <input
@@ -691,17 +703,17 @@ export const Workbench: React.FC<WorkbenchProps> = ({
                 step="0.05"
                 value={relativeOpacity}
                 onChange={(e) => setRelativeOpacity(parseFloat(e.target.value))}
-                style={{ width: '88px' }}
+                style={{ width: '70px' }}
               />
-              <span className="mono-muted" style={{ color: 'var(--ch2)' }}>
+              <span className="mono-muted" style={{ color: 'var(--ch2)', fontSize: '11px' }}>
                 CH2
               </span>
-              <span className="mono-num" style={{ minWidth: '38px', textAlign: 'right' }}>
+              <span className="mono-num" style={{ minWidth: '34px', textAlign: 'right', fontSize: '11px' }}>
                 {relativeOpacity > 0 ? `+${relativeOpacity.toFixed(2)}` : relativeOpacity.toFixed(2)}
               </span>
             </div>
           ) : (
-            <span className="tag-badge">
+            <span className="tag-badge" style={{ flexShrink: 0, fontSize: '11px' }}>
               SYNC {Math.round(timeline.effectiveBpm)} BPM
             </span>
           )}

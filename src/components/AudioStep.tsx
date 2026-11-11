@@ -65,7 +65,6 @@ export const AudioStep: React.FC<AudioStepProps> = ({
   );
   const [currentTime, setCurrentTime] = useState<number>(anchorTime);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
-  const [previewRate, setPreviewRate] = useState<number>(1.0);
 
   const [strategy, setStrategy] = useState<BpmAlignStrategy>(initialStrategy);
   const [customBpm, setCustomBpm] = useState<number>(initialCustomBpm);
@@ -248,25 +247,13 @@ export const AudioStep: React.FC<AudioStepProps> = ({
     const video = videoRef.current;
     if (!video) return;
     video.preservesPitch = true;
-    video.playbackRate = previewRate;
+    video.playbackRate = 1.0;
     if (isPlaying) {
       video.pause();
       setIsPlaying(false);
     } else {
       video.play().catch(() => {});
       setIsPlaying(true);
-    }
-  };
-
-  /**
-   * 切换找拍慢放预览倍率
-   */
-  const handlePreviewRateChange = (rate: number) => {
-    setPreviewRate(rate);
-    const video = videoRef.current;
-    if (video) {
-      video.preservesPitch = true;
-      video.playbackRate = rate;
     }
   };
 
@@ -318,11 +305,11 @@ export const AudioStep: React.FC<AudioStepProps> = ({
     video.currentTime = preRoll;
     setCurrentTime(preRoll);
     video.preservesPitch = true;
-    video.playbackRate = previewRate;
+    video.playbackRate = 1.0;
     video.play().catch(() => {});
     setIsPlaying(true);
 
-    const delayMs = (anchorTime - preRoll) * (1000 / previewRate);
+    const delayMs = (anchorTime - preRoll) * 1000;
     setTimeout(() => {
       try {
         const AudioCtx =
@@ -369,11 +356,20 @@ export const AudioStep: React.FC<AudioStepProps> = ({
     >
       {/* 顶部子工具栏 */}
       <div className="toolbar-row">
-        <div className="control-group">
+        <div className="control-group" style={{ minWidth: 0, overflow: 'hidden' }}>
           <span className={`tag-badge ${videoIndex === 1 ? 'ch1' : 'ch2'}`}>
             CH 0{videoIndex}
           </span>
-          <span style={{ fontSize: '12px', fontWeight: 600 }}>
+          <span
+            style={{
+              fontSize: '12px',
+              fontWeight: 600,
+              maxWidth: '130px',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
             {videoItem.name}
           </span>
           <span className="tag-badge">
@@ -383,8 +379,8 @@ export const AudioStep: React.FC<AudioStepProps> = ({
 
         {/* 通道 2 附加全局 BPM 对齐策略 */}
         {videoIndex === 2 && (
-          <div className="control-group">
-            <span className="mono-muted">BPM 对齐</span>
+          <div className="control-group" style={{ flexShrink: 0 }}>
+            <span className="mono-muted" style={{ fontSize: '11px' }}>BPM 对齐</span>
             <div className="seg-group">
               <button
                 type="button"
@@ -398,14 +394,14 @@ export const AudioStep: React.FC<AudioStepProps> = ({
                 onClick={() => commitAudioState(bpm, anchorTime, 'left', customBpm)}
                 className={`seg-btn ${strategy === 'left' ? 'active' : ''}`}
               >
-                按 CH1 ({otherVideoItem?.audioInfo?.userBpm || 160})
+                随 CH1 ({otherVideoItem?.audioInfo?.userBpm || 160})
               </button>
               <button
                 type="button"
                 onClick={() => commitAudioState(bpm, anchorTime, 'right', customBpm)}
                 className={`seg-btn ${strategy === 'right' ? 'active' : ''}`}
               >
-                按 CH2 ({bpm})
+                随 CH2 ({bpm})
               </button>
               <button
                 type="button"
@@ -458,7 +454,7 @@ export const AudioStep: React.FC<AudioStepProps> = ({
       </div>
 
       {/* 底部波形与对拍控制面板 */}
-      <div className="bottom-bar" style={{ padding: '8px 12px', gap: '8px' }}>
+      <div className="bottom-bar" style={{ gap: '8px' }}>
         <div style={{ height: '56px', width: '100%' }}>
           <canvas
             ref={canvasRef}
@@ -477,78 +473,66 @@ export const AudioStep: React.FC<AudioStepProps> = ({
           />
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          {/* 左：播放、逐帧、预览倍速、当前时间 */}
-          <div className="control-group">
-            <button type="button" onClick={togglePlay} className="btn">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+          {/* 左：播放、逐帧步进、当前时间 */}
+          <div className="control-group" style={{ gap: '4px' }}>
+            <button type="button" onClick={togglePlay} className="btn" style={{ padding: '0 8px' }}>
               {isPlaying ? <Pause size={13} /> : <Play size={13} />}
               <span>{isPlaying ? '暂停' : '播放'}</span>
             </button>
 
-            <button type="button" onClick={() => stepFrame(-1)} className="btn">
+            <button type="button" onClick={() => stepFrame(-1)} className="btn" style={{ padding: '0 6px' }}>
               <ChevronLeft size={13} />
               <span>1F</span>
             </button>
-            <button type="button" onClick={() => stepFrame(1)} className="btn">
+            <button type="button" onClick={() => stepFrame(1)} className="btn" style={{ padding: '0 6px' }}>
               <span>1F</span>
               <ChevronRight size={13} />
             </button>
 
-            <div className="seg-group">
-              {[0.25, 0.5, 1.0].map((r) => (
-                <button
-                  key={r}
-                  type="button"
-                  onClick={() => handlePreviewRateChange(r)}
-                  className={`seg-btn ${previewRate === r ? 'active' : ''}`}
-                >
-                  {r}x
-                </button>
-              ))}
-            </div>
-
-            <span className="mono-num" style={{ minWidth: '64px' }}>
+            <span className="mono-num" style={{ minWidth: '58px', fontSize: '11px', textAlign: 'center' }}>
               {currentTime.toFixed(3)}s
             </span>
           </div>
 
           {/* 中：设为锚点、±20ms 微调、试听锚点 */}
-          <div className="control-group">
-            <button type="button" onClick={setAsAnchor} className="btn btn-accent">
+          <div className="control-group" style={{ gap: '4px' }}>
+            <button type="button" onClick={setAsAnchor} className="btn btn-accent" style={{ padding: '0 9px' }}>
               <Crosshair size={13} />
               <span>设为锚点</span>
             </button>
 
-            <button type="button" onClick={() => nudgeAnchor(-0.02)} className="btn">
+            <button type="button" onClick={() => nudgeAnchor(-0.02)} className="btn" style={{ padding: '0 6px' }}>
               <span className="mono-num">-20ms</span>
             </button>
-            <button type="button" onClick={() => nudgeAnchor(0.02)} className="btn">
+            <button type="button" onClick={() => nudgeAnchor(0.02)} className="btn" style={{ padding: '0 6px' }}>
               <span className="mono-num">+20ms</span>
             </button>
 
-            <button type="button" onClick={jumpToAnchor} className="btn">
+            <button type="button" onClick={jumpToAnchor} className="btn" style={{ padding: '0 8px' }}>
               <Volume2 size={13} />
               <span>试听</span>
             </button>
           </div>
 
-          {/* 右：TAP 测速与 BPM 步进器 */}
-          <div className="control-group">
+          {/* 右：单一真实源 TAP 测速与 BPM 调节区 */}
+          <div className="control-group" style={{ gap: '4px', flexShrink: 0 }}>
             <button
               type="button"
               onClick={handleTap}
               className={`btn ${tapActive ? 'btn-active' : ''}`}
+              style={{ padding: '0 8px' }}
             >
               <Activity size={13} />
               <span>TAP</span>
             </button>
 
-            <span className="mono-muted">BPM</span>
+            <span className="mono-muted" style={{ fontSize: '11px' }}>BPM</span>
             <button
               type="button"
               onClick={() => commitAudioState(Math.max(1, bpm - 1), anchorTime, strategy, customBpm)}
               className="btn"
-              style={{ padding: '0 6px' }}
+              style={{ padding: '0 6px', width: '24px' }}
             >
               <Minus size={12} />
             </button>
@@ -560,12 +544,13 @@ export const AudioStep: React.FC<AudioStepProps> = ({
                 const val = Math.max(1, parseInt(e.target.value, 10) || 160);
                 commitAudioState(val, anchorTime, strategy, customBpm);
               }}
+              style={{ width: '48px', height: '24px', fontSize: '11.5px' }}
             />
             <button
               type="button"
               onClick={() => commitAudioState(bpm + 1, anchorTime, strategy, customBpm)}
               className="btn"
-              style={{ padding: '0 6px' }}
+              style={{ padding: '0 6px', width: '24px' }}
             >
               <Plus size={12} />
             </button>

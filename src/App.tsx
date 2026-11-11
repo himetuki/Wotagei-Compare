@@ -12,10 +12,10 @@ import { Workbench } from './components/Workbench.tsx';
 /** 全局顶部 6 步分段导航配置 */
 const WIZARD_STEPS: { id: WizardStep; num: string; label: string }[] = [
   { id: 'import', num: '01', label: '导入' },
-  { id: 'geometry-video1', num: '02', label: '视频1空间' },
-  { id: 'geometry-video2', num: '03', label: '视频2空间' },
-  { id: 'audio-video1', num: '04', label: '视频1对拍' },
-  { id: 'audio-video2', num: '05', label: '视频2对拍' },
+  { id: 'geometry-video1', num: '02', label: '空间1' },
+  { id: 'geometry-video2', num: '03', label: '空间2' },
+  { id: 'audio-video1', num: '04', label: '对拍1' },
+  { id: 'audio-video2', num: '05', label: '对拍2' },
   { id: 'workbench', num: '06', label: '对比台' },
 ];
 
@@ -97,7 +97,7 @@ export default function App(): React.ReactNode {
     <div className="app-shell">
       {/* 顶部全局 6 步分段直达导航栏 */}
       <header className="top-nav">
-        <div className="control-group">
+        <div className="control-group" style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
           <span
             style={{
               fontFamily: 'var(--font-mono)',
@@ -113,7 +113,7 @@ export default function App(): React.ReactNode {
             WC-MON
           </span>
           <div className="divider-v" />
-          <nav className="step-track" aria-label="工作流步骤导航">
+          <nav className="step-track" aria-label="工作流步骤导航" style={{ overflow: 'hidden' }}>
             {WIZARD_STEPS.map((item) => {
               const disabled = item.id !== 'import' && !isBothLoaded;
               const active = step === item.id;
@@ -133,17 +133,7 @@ export default function App(): React.ReactNode {
           </nav>
         </div>
 
-        <div className="control-group">
-          {video1 && (
-            <span className="tag-badge ch1">
-              CH1 {video1.audioInfo?.userBpm ?? '--'} BPM
-            </span>
-          )}
-          {video2 && (
-            <span className="tag-badge ch2">
-              CH2 {video2.audioInfo?.userBpm ?? '--'} BPM
-            </span>
-          )}
+        <div className="control-group" style={{ flexShrink: 0 }}>
           {nextStepItem && (
             <button
               type="button"
