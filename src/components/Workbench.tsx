@@ -2,10 +2,7 @@ import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react'
 import {
   Play,
   Pause,
-  ChevronLeft,
-  ChevronRight,
   Crosshair,
-  FlipHorizontal2,
   RotateCcw,
   Download,
   Layers,
@@ -43,6 +40,27 @@ export interface WorkbenchProps {
 }
 
 const SLOW_MOTION_RATES: SlowMotionRate[] = [0.1, 0.15, 0.2, 0.3, 0.5, 0.75, 1.0];
+
+/** 专业标准水平左右镜像矢量图标 (沿垂直对称轴翻转) */
+const HorizontalFlipIcon: React.FC<{ size?: number }> = ({ size = 12 }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="m3 7 5 5-5 5V7z" />
+    <path d="m21 7-5 5 5 5V7z" />
+    <path d="M12 20v2" />
+    <path d="M12 14v2" />
+    <path d="M12 8v2" />
+    <path d="M12 2v2" />
+  </svg>
+);
 
 /**
  * 步骤 06：同台对比播放与慢放监看工作台
@@ -98,8 +116,8 @@ export const Workbench: React.FC<WorkbenchProps> = ({
     );
   }, [video1, video2, bpmStrategy, customBpm, a1, a2]);
 
-  const [tau, setTau] = useState<number>(timeline.unionInterval.start);
-  const tauRef = useRef<number>(timeline.unionInterval.start);
+  const [tau, setTau] = useState<number>(timeline.intersectInterval.start);
+  const tauRef = useRef<number>(timeline.intersectInterval.start);
   tauRef.current = tau;
 
   // 计算三线正交空间变换矩阵
@@ -142,8 +160,8 @@ export const Workbench: React.FC<WorkbenchProps> = ({
   const seekToTau = useCallback(
     (targetTau: number) => {
       const clampedTau = Math.max(
-        timeline.unionInterval.start,
-        Math.min(timeline.unionInterval.end, targetTau)
+        timeline.intersectInterval.start,
+        Math.min(timeline.intersectInterval.end, targetTau)
       );
       setTau(clampedTau);
       tauRef.current = clampedTau;
@@ -179,8 +197,8 @@ export const Workbench: React.FC<WorkbenchProps> = ({
       v2.pause();
       setIsPlaying(false);
     } else {
-      if (tauRef.current >= timeline.unionInterval.end - 0.05) {
-        seekToTau(timeline.unionInterval.start);
+      if (tauRef.current >= timeline.intersectInterval.end - 0.05) {
+        seekToTau(timeline.intersectInterval.start);
       }
       metronomeRef.current.reset(tauRef.current, timeline.effectiveBpm);
 
@@ -214,13 +232,21 @@ export const Workbench: React.FC<WorkbenchProps> = ({
   };
 
   /**
-   * 暂停并按帧步进
+   * 从锚点前 1s 快速起播
    */
-  const stepFrame = (frames: number) => {
-    if (isPlaying) {
-      togglePlay();
+  const playFromPreRoll = () => {
+    const targetTau = Math.max(timeline.intersectInterval.start, -1.0);
+    seekToTau(targetTau);
+    const v1 = videoRef1.current;
+    const v2 = videoRef2.current;
+    if (v1 && v2) {
+      metronomeRef.current.reset(targetTau, timeline.effectiveBpm);
+      v1.playbackRate = getPlaybackRate(slowMotionRate, timeline.rate1);
+      v2.playbackRate = getPlaybackRate(slowMotionRate, timeline.rate2);
+      v1.play().catch(() => {});
+      v2.play().catch(() => {});
+      setIsPlaying(true);
     }
-    seekToTau(tauRef.current + (1 / 30) * frames);
   };
 
   /**
@@ -283,8 +309,8 @@ export const Workbench: React.FC<WorkbenchProps> = ({
           currentTau += deltaSec * slowMotionRate;
         }
 
-        if (currentTau > timeline.unionInterval.end) {
-          seekToTau(timeline.unionInterval.start);
+        if (currentTau > timeline.intersectInterval.end) {
+          seekToTau(timeline.intersectInterval.start);
         } else {
           tauRef.current = currentTau;
           setTau(currentTau);
@@ -560,7 +586,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
             style={{ padding: '0 6px' }}
             title="视频 1 水平镜像"
           >
-            <FlipHorizontal2 size={12} />
+            <HorizontalFlipIcon size={12} />
             <span>CH1</span>
           </button>
           <button
@@ -570,7 +596,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
             style={{ padding: '0 6px' }}
             title="视频 2 水平镜像"
           >
-            <FlipHorizontal2 size={12} />
+            <HorizontalFlipIcon size={12} />
             <span>CH2</span>
           </button>
         </div>
@@ -638,38 +664,29 @@ export const Workbench: React.FC<WorkbenchProps> = ({
           <input
             type="range"
             className="slider"
-            min={timeline.unionInterval.start}
-            max={timeline.unionInterval.end}
+            min={timeline.intersectInterval.start}
+            max={timeline.intersectInterval.end}
             step="0.01"
             value={tau}
             onChange={(e) => seekToTau(parseFloat(e.target.value))}
             style={{ flex: 1 }}
           />
           <span className="mono-muted" style={{ minWidth: '110px', textAlign: 'right' }}>
-            {timeline.unionInterval.start.toFixed(1)}s ~ +{timeline.unionInterval.end.toFixed(1)}s
+            {timeline.intersectInterval.start.toFixed(1)}s ~ +{timeline.intersectInterval.end.toFixed(1)}s
           </span>
         </div>
 
         {/* 第二行：播放步进、七档慢放、叠加透明度 */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
           <div className="control-group" style={{ gap: '4px' }}>
-            <button type="button" onClick={() => seekToTau(0)} className="btn" style={{ padding: '0 8px' }}>
+            <button type="button" onClick={playFromPreRoll} className="btn" style={{ padding: '0 8px' }}>
               <Crosshair size={12} />
-              <span>锚点</span>
+              <span>锚点前 1s</span>
             </button>
 
             <button type="button" onClick={togglePlay} className="btn btn-accent" style={{ padding: '0 9px' }}>
               {isPlaying ? <Pause size={13} /> : <Play size={13} />}
               <span>{isPlaying ? '暂停' : '播放'}</span>
-            </button>
-
-            <button type="button" onClick={() => stepFrame(-1)} className="btn" style={{ padding: '0 6px' }}>
-              <ChevronLeft size={13} />
-              <span>1F</span>
-            </button>
-            <button type="button" onClick={() => stepFrame(1)} className="btn" style={{ padding: '0 6px' }}>
-              <span>1F</span>
-              <ChevronRight size={13} />
             </button>
           </div>
 

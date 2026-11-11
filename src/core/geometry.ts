@@ -182,8 +182,8 @@ export function calculateTriLineSplitScreenPlacement(
     bottomY = v.y0 * videoSize.height;
   }
 
-  // 目标特征尺寸：在半区高度中占 42%，上方留出整整 45%+ 的高空容纳光弧
-  const targetFeatureH = halfViewport.height * 0.42;
+  // 目标特征尺寸：在半区高度中占 60%，显著放大人物主体以清晰对比细节，上方预留 25%+ 容纳挥棒光弧
+  const targetFeatureH = halfViewport.height * 0.60;
   const scale = targetFeatureH / featureDist;
 
   // 目标半区对齐位置：中轴居中，脚底沉在 85%

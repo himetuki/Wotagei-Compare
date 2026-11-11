@@ -78,10 +78,10 @@ export class VideoExporter {
     } = this.config;
 
     // 1. 计算总帧数与时间
-    const unionStart = timeline.unionInterval.start;
-    const unionEnd = timeline.unionInterval.end;
-    const unionDuration = unionEnd - unionStart;
-    const outputDurationSec = unionDuration / slowMotionRate;
+    const exportStart = timeline.intersectInterval.start;
+    const exportEnd = timeline.intersectInterval.end;
+    const exportDuration = exportEnd - exportStart;
+    const outputDurationSec = exportDuration / slowMotionRate;
     const totalFrames = Math.max(1, Math.round(outputDurationSec * fps));
 
     onProgress({
@@ -132,10 +132,10 @@ export class VideoExporter {
       // 合成节奏节拍器音轨
       const effectiveBpm = timeline.effectiveBpm;
       const beatIntervalTau = 60 / effectiveBpm;
-      let tauBeat = Math.ceil(unionStart / beatIntervalTau) * beatIntervalTau;
+      let tauBeat = Math.ceil(exportStart / beatIntervalTau) * beatIntervalTau;
 
-      while (tauBeat <= unionEnd) {
-        const outTime = (tauBeat - unionStart) / slowMotionRate;
+      while (tauBeat <= exportEnd) {
+        const outTime = (tauBeat - exportStart) / slowMotionRate;
         if (outTime >= 0 && outTime < outputDurationSec) {
           const osc = offlineAudioCtx.createOscillator();
           const gain = offlineAudioCtx.createGain();
@@ -222,7 +222,7 @@ export class VideoExporter {
 
       const a1 = typeof video1.audioInfo?.anchorTime === 'number' ? video1.audioInfo.anchorTime : 1.0;
       const a2 = typeof video2.audioInfo?.anchorTime === 'number' ? video2.audioInfo.anchorTime : 1.0;
-      const currentTau = unionStart + (frame / fps) * slowMotionRate;
+      const currentTau = exportStart + (frame / fps) * slowMotionRate;
       const t1 = mapTauToSourceTime(currentTau, a1, timeline.rate1);
       const t2 = mapTauToSourceTime(currentTau, a2, timeline.rate2);
 

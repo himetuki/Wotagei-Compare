@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ArrowLeft, Download, X, RotateCcw, Check } from 'lucide-react';
+import { ArrowLeft, Download, X, RotateCcw, Check, Play, Pause } from 'lucide-react';
 import type { ComparisonMode, ViewportTransform } from '../types/geometry.ts';
 import type { SlowMotionRate, SoundSource } from '../types/timeline.ts';
 import type { AlignmentTransform } from '../core/geometry.ts';
@@ -43,14 +43,15 @@ export const ExportPage: React.FC<ExportPageProps> = ({
   currentPlayTau,
   onBack,
 }) => {
-  const unionStart = timeline.unionInterval.start;
-  const unionEnd = timeline.unionInterval.end;
+  const intersectStart = timeline.intersectInterval.start;
+  const intersectEnd = timeline.intersectInterval.end;
 
-  const [clipStart, setClipStart] = useState<number>(unionStart);
-  const [clipEnd, setClipEnd] = useState<number>(unionEnd);
+  const [clipStart, setClipStart] = useState<number>(intersectStart);
+  const [clipEnd, setClipEnd] = useState<number>(intersectEnd);
   const [previewTau, setPreviewTau] = useState<number>(
-    Math.max(unionStart, Math.min(unionEnd, currentPlayTau))
+    Math.max(intersectStart, Math.min(intersectEnd, currentPlayTau))
   );
+  const [isPreviewPlaying, setIsPreviewPlaying] = useState<boolean>(false);
 
   const [isExporting, setIsExporting] = useState<boolean>(false);
   const [progress, setProgress] = useState<ExportProgressInfo>({
@@ -72,6 +73,32 @@ export const ExportPage: React.FC<ExportPageProps> = ({
   const clipDuration = Math.max(0.1, clipEnd - clipStart);
   const estimatedOutputDuration = clipDuration / initialRate;
   const estimatedFrames = Math.max(1, Math.round(estimatedOutputDuration * 30));
+
+  // 导出台连续预览播放循环
+  useEffect(() => {
+    if (!isPreviewPlaying) return;
+
+    let animId: number;
+    let lastTime = performance.now();
+
+    const previewLoop = (now: number) => {
+      const deltaSec = (now - lastTime) / 1000;
+      lastTime = now;
+
+      setPreviewTau((prev) => {
+        let next = prev + deltaSec * initialRate;
+        if (next > clipEnd) {
+          next = clipStart;
+        }
+        return next;
+      });
+
+      animId = requestAnimationFrame(previewLoop);
+    };
+
+    animId = requestAnimationFrame(previewLoop);
+    return () => cancelAnimationFrame(animId);
+  }, [isPreviewPlaying, clipStart, clipEnd, initialRate]);
 
   // 当预览游标变化时更新单帧实时预览画布
   useEffect(() => {
@@ -152,7 +179,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
 
     const customTimeline: UnifiedTimelineResult = {
       ...timeline,
-      unionInterval: {
+      intersectInterval: {
         start: clipStart,
         end: clipEnd,
       },
@@ -250,8 +277,8 @@ export const ExportPage: React.FC<ExportPageProps> = ({
 
       {/* 主体两栏 */}
       <div className="export-grid">
-        {/* 左栏：实时单帧画面预览与预览时间滑块 */}
-        <div className="panel-box">
+        {/* 左栏：实时画面预览、预览播放控制与时间滑块 */}
+        <div className="panel-box" style={{ gap: '6px' }}>
           <div
             style={{
               flex: 1,
@@ -273,43 +300,65 @@ export const ExportPage: React.FC<ExportPageProps> = ({
             />
           </div>
 
-          <div className="control-group" style={{ justifyContent: 'space-between' }}>
-            <span className="mono-muted">预览位置</span>
+          <div className="control-group" style={{ gap: '6px' }}>
+            <button
+              type="button"
+              className="btn btn-accent"
+              style={{ padding: '0 8px', height: '26px' }}
+              onClick={() => setIsPreviewPlaying((prev) => !prev)}
+            >
+              {isPreviewPlaying ? <Pause size={12} /> : <Play size={12} />}
+              <span style={{ fontSize: '11px' }}>{isPreviewPlaying ? '暂停' : '预览'}</span>
+            </button>
+
             <input
               type="range"
               className="slider"
               min={clipStart}
               max={clipEnd}
-              step="0.02"
+              step="0.01"
               value={previewTau}
-              onChange={(e) => setPreviewTau(parseFloat(e.target.value))}
-              style={{ flex: 1, margin: '0 8px' }}
+              onChange={(e) => {
+                setIsPreviewPlaying(false);
+                setPreviewTau(parseFloat(e.target.value));
+              }}
+              style={{ flex: 1 }}
             />
-            <span className="mono-num" style={{ minWidth: '58px', textAlign: 'right' }}>
+
+            <span className="mono-num" style={{ minWidth: '58px', textAlign: 'right', fontSize: '11.5px' }}>
               {previewTau >= 0 ? `+${previewTau.toFixed(2)}s` : `${previewTau.toFixed(2)}s`}
             </span>
           </div>
         </div>
 
-        {/* 右栏：A-B 截取滑块、成片统计与导出执行 */}
-        <div className="panel-box" style={{ justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {/* 右栏：A-B 截取滑块、成片统计与导出执行 (自适应紧凑防下溢) */}
+        <div
+          className="panel-box"
+          style={{
+            gap: '6px',
+            overflowY: 'auto',
+            justifyContent: 'space-between',
+          }}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)' }}>
-                起止区间截取
+              <span style={{ fontSize: '11.5px', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                起止区间截取 (交集范围)
               </span>
               <button
                 type="button"
                 className="btn"
+                style={{ height: '22px', padding: '0 6px', fontSize: '10.5px' }}
                 onClick={() => {
-                  setClipStart(unionStart);
-                  setClipEnd(unionEnd);
-                  setPreviewTau(unionStart);
+                  setIsPreviewPlaying(false);
+                  setClipStart(intersectStart);
+                  setClipEnd(intersectEnd);
+                  setPreviewTau(intersectStart);
                 }}
               >
-                <RotateCcw size={11} />
+                <RotateCcw size={10} />
                 <span className="mono-num">
-                  全片 {(unionEnd - unionStart).toFixed(1)}s
+                  全片 {(intersectEnd - intersectStart).toFixed(1)}s
                 </span>
               </button>
             </div>
@@ -320,21 +369,24 @@ export const ExportPage: React.FC<ExportPageProps> = ({
                 backgroundColor: 'var(--bg-surface)',
                 border: '1px solid var(--border)',
                 borderRadius: '4px',
-                padding: '6px 10px',
+                padding: '4px 8px',
                 display: 'flex',
                 flexDirection: 'column',
-                gap: '4px',
+                gap: '2px',
               }}
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span className="mono-num" style={{ color: 'var(--accent)' }}>
+                <span className="mono-num" style={{ color: 'var(--accent)', fontSize: '11px', fontWeight: 600 }}>
                   IN (A): {clipStart >= 0 ? `+${clipStart.toFixed(2)}s` : `${clipStart.toFixed(2)}s`}
                 </span>
                 <button
                   type="button"
                   className="btn"
-                  style={{ height: '22px', padding: '0 8px', fontSize: '11px' }}
-                  onClick={() => setClipStart(Math.min(previewTau, clipEnd - 0.2))}
+                  style={{ height: '20px', padding: '0 6px', fontSize: '10.5px' }}
+                  onClick={() => {
+                    setIsPreviewPlaying(false);
+                    setClipStart(Math.min(previewTau, clipEnd - 0.2));
+                  }}
                 >
                   设当前为 A
                 </button>
@@ -342,11 +394,12 @@ export const ExportPage: React.FC<ExportPageProps> = ({
               <input
                 type="range"
                 className="slider"
-                min={unionStart}
-                max={Math.max(unionStart, clipEnd - 0.2)}
-                step="0.05"
+                min={intersectStart}
+                max={Math.max(intersectStart, clipEnd - 0.2)}
+                step="0.01"
                 value={clipStart}
                 onChange={(e) => {
+                  setIsPreviewPlaying(false);
                   const val = parseFloat(e.target.value);
                   setClipStart(val);
                   setPreviewTau(val);
@@ -360,21 +413,24 @@ export const ExportPage: React.FC<ExportPageProps> = ({
                 backgroundColor: 'var(--bg-surface)',
                 border: '1px solid var(--border)',
                 borderRadius: '4px',
-                padding: '6px 10px',
+                padding: '4px 8px',
                 display: 'flex',
                 flexDirection: 'column',
-                gap: '4px',
+                gap: '2px',
               }}
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span className="mono-num" style={{ color: 'var(--ch2)' }}>
+                <span className="mono-num" style={{ color: 'var(--ch2)', fontSize: '11px', fontWeight: 600 }}>
                   OUT (B): {clipEnd >= 0 ? `+${clipEnd.toFixed(2)}s` : `${clipEnd.toFixed(2)}s`}
                 </span>
                 <button
                   type="button"
                   className="btn"
-                  style={{ height: '22px', padding: '0 8px', fontSize: '11px' }}
-                  onClick={() => setClipEnd(Math.max(previewTau, clipStart + 0.2))}
+                  style={{ height: '20px', padding: '0 6px', fontSize: '10.5px' }}
+                  onClick={() => {
+                    setIsPreviewPlaying(false);
+                    setClipEnd(Math.max(previewTau, clipStart + 0.2));
+                  }}
                 >
                   设当前为 B
                 </button>
@@ -382,11 +438,12 @@ export const ExportPage: React.FC<ExportPageProps> = ({
               <input
                 type="range"
                 className="slider"
-                min={Math.min(unionEnd, clipStart + 0.2)}
-                max={unionEnd}
-                step="0.05"
+                min={Math.min(intersectEnd, clipStart + 0.2)}
+                max={intersectEnd}
+                step="0.01"
                 value={clipEnd}
                 onChange={(e) => {
+                  setIsPreviewPlaying(false);
                   const val = parseFloat(e.target.value);
                   setClipEnd(val);
                   setPreviewTau(val);
@@ -399,34 +456,34 @@ export const ExportPage: React.FC<ExportPageProps> = ({
               style={{
                 display: 'grid',
                 gridTemplateColumns: '1fr 1fr',
-                gap: '6px',
+                gap: '4px',
                 backgroundColor: 'var(--bg-surface)',
                 border: '1px solid var(--border)',
                 borderRadius: '4px',
-                padding: '6px 10px',
+                padding: '4px 8px',
               }}
             >
               <div>
-                <div className="mono-muted">截取源时长</div>
-                <div className="mono-num" style={{ marginTop: '2px', fontWeight: 600 }}>
+                <div className="mono-muted" style={{ fontSize: '10px' }}>截取源时长</div>
+                <div className="mono-num" style={{ fontSize: '11px', fontWeight: 600 }}>
                   {clipDuration.toFixed(2)}s
                 </div>
               </div>
               <div>
-                <div className="mono-muted">慢放成片时长</div>
-                <div className="mono-num" style={{ marginTop: '2px', fontWeight: 600 }}>
+                <div className="mono-muted" style={{ fontSize: '10px' }}>慢放成片时长</div>
+                <div className="mono-num" style={{ fontSize: '11px', fontWeight: 600 }}>
                   {estimatedOutputDuration.toFixed(2)}s ({initialRate}x)
                 </div>
               </div>
               <div>
-                <div className="mono-muted">总渲染帧数</div>
-                <div className="mono-num" style={{ marginTop: '2px', fontWeight: 600 }}>
+                <div className="mono-muted" style={{ fontSize: '10px' }}>总渲染帧数</div>
+                <div className="mono-num" style={{ fontSize: '11px', fontWeight: 600 }}>
                   {estimatedFrames} FRAMES
                 </div>
               </div>
               <div>
-                <div className="mono-muted">镜像状态</div>
-                <div className="mono-num" style={{ marginTop: '2px', fontWeight: 600 }}>
+                <div className="mono-muted" style={{ fontSize: '10px' }}>镜像状态</div>
+                <div className="mono-num" style={{ fontSize: '11px', fontWeight: 600 }}>
                   CH1:{initialMirror1 ? 'ON' : 'OFF'} / CH2:{initialMirror2 ? 'ON' : 'OFF'}
                 </div>
               </div>
@@ -434,19 +491,19 @@ export const ExportPage: React.FC<ExportPageProps> = ({
           </div>
 
           {/* 底部进度与导出按钮 */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '2px' }}>
             {isExporting && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span className="mono-muted">{progress.statusText}</span>
-                  <span className="mono-num" style={{ color: 'var(--accent)' }}>
+                  <span className="mono-muted" style={{ fontSize: '11px' }}>{progress.statusText}</span>
+                  <span className="mono-num" style={{ color: 'var(--accent)', fontSize: '11px' }}>
                     {progress.percent}%
                   </span>
                 </div>
                 <div
                   style={{
                     width: '100%',
-                    height: '6px',
+                    height: '5px',
                     backgroundColor: 'var(--bg-surface)',
                     border: '1px solid var(--border)',
                     borderRadius: '2px',
@@ -466,14 +523,14 @@ export const ExportPage: React.FC<ExportPageProps> = ({
             )}
 
             {errorMsg && (
-              <div className="mono-num" style={{ color: 'var(--danger)' }}>
+              <div className="mono-num" style={{ color: 'var(--danger)', fontSize: '11px' }}>
                 {errorMsg}
               </div>
             )}
 
             {savedNativePath && (
-              <div className="control-group" style={{ color: 'var(--ch2)' }}>
-                <Check size={13} />
+              <div className="control-group" style={{ color: 'var(--ch2)', fontSize: '11px' }}>
+                <Check size={12} />
                 <span className="mono-num">已保存: {savedNativePath}</span>
               </div>
             )}
@@ -484,10 +541,11 @@ export const ExportPage: React.FC<ExportPageProps> = ({
                 download={`wotagei-compare-${Date.now()}.mp4`}
                 className="btn"
                 style={{
-                  height: '32px',
+                  height: '30px',
                   textDecoration: 'none',
                   borderColor: 'var(--ch2)',
                   color: 'var(--ch2)',
+                  fontSize: '11.5px',
                 }}
               >
                 <Download size={13} />
@@ -500,9 +558,9 @@ export const ExportPage: React.FC<ExportPageProps> = ({
                 type="button"
                 onClick={handleCancelExport}
                 className="btn btn-danger"
-                style={{ height: '34px', width: '100%' }}
+                style={{ height: '32px', width: '100%', fontSize: '12px' }}
               >
-                <X size={14} />
+                <X size={13} />
                 <span>取消导出</span>
               </button>
             ) : (
@@ -510,9 +568,9 @@ export const ExportPage: React.FC<ExportPageProps> = ({
                 type="button"
                 onClick={handleStartExport}
                 className="btn btn-accent"
-                style={{ height: '34px', width: '100%' }}
+                style={{ height: '32px', width: '100%', fontSize: '12px' }}
               >
-                <Download size={14} />
+                <Download size={13} />
                 <span>开始渲染导出</span>
               </button>
             )}

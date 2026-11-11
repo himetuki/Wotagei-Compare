@@ -2,8 +2,6 @@ import React, { useRef, useState, useEffect } from 'react';
 import {
   Play,
   Pause,
-  ChevronLeft,
-  ChevronRight,
   Crosshair,
   Volume2,
   Activity,
@@ -68,6 +66,7 @@ export const AudioStep: React.FC<AudioStepProps> = ({
 
   const [strategy, setStrategy] = useState<BpmAlignStrategy>(initialStrategy);
   const [customBpm, setCustomBpm] = useState<number>(initialCustomBpm);
+  const [anchorInputText, setAnchorInputText] = useState<string>(anchorTime.toFixed(3));
 
   const tapTrackerRef = useRef<TapTempoTracker>(new TapTempoTracker());
   const [tapActive, setTapActive] = useState<boolean>(false);
@@ -79,6 +78,7 @@ export const AudioStep: React.FC<AudioStepProps> = ({
     const nextAnchor = typeof audio?.anchorTime === 'number' ? audio.anchorTime : 1.0;
     setBpm(nextBpm);
     setAnchorTime(nextAnchor);
+    setAnchorInputText(nextAnchor.toFixed(3));
     setCurrentTime(nextAnchor);
     setIsPlaying(false);
     if (videoRef.current) {
@@ -97,6 +97,7 @@ export const AudioStep: React.FC<AudioStepProps> = ({
   ) => {
     setBpm(nextBpm);
     setAnchorTime(nextAnchor);
+    setAnchorInputText(nextAnchor.toFixed(3));
     setStrategy(nextStrategy);
     setCustomBpm(nextCustomBpm);
     onChange?.(
@@ -258,41 +259,12 @@ export const AudioStep: React.FC<AudioStepProps> = ({
   };
 
   /**
-   * 逐帧步进定位起拍瞬间
-   */
-  const stepFrame = (frames: number) => {
-    const video = videoRef.current;
-    if (!video) return;
-    video.pause();
-    setIsPlaying(false);
-    const newTime = Math.max(
-      0,
-      Math.min(totalDuration, video.currentTime + frames * (1 / 30))
-    );
-    video.currentTime = newTime;
-    setCurrentTime(newTime);
-  };
-
-  /**
    * 将当前播放位置设为对拍锚点
    */
   const setAsAnchor = () => {
     const video = videoRef.current;
     const t = video ? video.currentTime : currentTime;
     commitAudioState(bpm, t, strategy, customBpm);
-  };
-
-  /**
-   * 毫秒级微调对拍锚点
-   */
-  const nudgeAnchor = (deltaSec: number) => {
-    const next = Math.max(0, Math.min(totalDuration, anchorTime + deltaSec));
-    const video = videoRef.current;
-    if (video) {
-      video.currentTime = next;
-      setCurrentTime(next);
-    }
-    commitAudioState(bpm, next, strategy, customBpm);
   };
 
   /**
@@ -474,40 +446,53 @@ export const AudioStep: React.FC<AudioStepProps> = ({
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-          {/* 左：播放、逐帧步进、当前时间 */}
-          <div className="control-group" style={{ gap: '4px' }}>
+          {/* 左：播放、当前时间 */}
+          <div className="control-group" style={{ gap: '6px' }}>
             <button type="button" onClick={togglePlay} className="btn" style={{ padding: '0 8px' }}>
               {isPlaying ? <Pause size={13} /> : <Play size={13} />}
               <span>{isPlaying ? '暂停' : '播放'}</span>
             </button>
 
-            <button type="button" onClick={() => stepFrame(-1)} className="btn" style={{ padding: '0 6px' }}>
-              <ChevronLeft size={13} />
-              <span>1F</span>
-            </button>
-            <button type="button" onClick={() => stepFrame(1)} className="btn" style={{ padding: '0 6px' }}>
-              <span>1F</span>
-              <ChevronRight size={13} />
-            </button>
-
-            <span className="mono-num" style={{ minWidth: '58px', fontSize: '11px', textAlign: 'center' }}>
+            <span className="mono-num" style={{ minWidth: '60px', fontSize: '11.5px', textAlign: 'center' }}>
               {currentTime.toFixed(3)}s
             </span>
           </div>
 
-          {/* 中：设为锚点、±20ms 微调、试听锚点 */}
-          <div className="control-group" style={{ gap: '4px' }}>
+          {/* 中：设为锚点、直接输入锚点数值、试听锚点 */}
+          <div className="control-group" style={{ gap: '6px' }}>
             <button type="button" onClick={setAsAnchor} className="btn btn-accent" style={{ padding: '0 9px' }}>
               <Crosshair size={13} />
               <span>设为锚点</span>
             </button>
 
-            <button type="button" onClick={() => nudgeAnchor(-0.02)} className="btn" style={{ padding: '0 6px' }}>
-              <span className="mono-num">-20ms</span>
-            </button>
-            <button type="button" onClick={() => nudgeAnchor(0.02)} className="btn" style={{ padding: '0 6px' }}>
-              <span className="mono-num">+20ms</span>
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <span className="mono-muted" style={{ fontSize: '11px' }}>锚点</span>
+              <input
+                type="number"
+                step="0.001"
+                className="num-input"
+                value={anchorInputText}
+                onChange={(e) => {
+                  setAnchorInputText(e.target.value);
+                  const parsed = parseFloat(e.target.value);
+                  if (!isNaN(parsed) && parsed >= 0 && parsed <= totalDuration) {
+                    commitAudioState(bpm, parsed, strategy, customBpm);
+                  }
+                }}
+                onBlur={() => {
+                  const parsed = parseFloat(anchorInputText);
+                  if (!isNaN(parsed)) {
+                    const clamped = Math.max(0, Math.min(totalDuration, parsed));
+                    setAnchorInputText(clamped.toFixed(3));
+                    commitAudioState(bpm, clamped, strategy, customBpm);
+                  } else {
+                    setAnchorInputText(anchorTime.toFixed(3));
+                  }
+                }}
+                style={{ width: '64px', height: '24px', fontSize: '11.5px', textAlign: 'center' }}
+              />
+              <span className="mono-muted" style={{ fontSize: '11px' }}>s</span>
+            </div>
 
             <button type="button" onClick={jumpToAnchor} className="btn" style={{ padding: '0 8px' }}>
               <Volume2 size={13} />

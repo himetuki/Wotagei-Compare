@@ -119,6 +119,17 @@ async function run() {
   await page.screenshot({ path: '/tmp/sim-06-workbench.png' });
   console.log('Saved /tmp/sim-06-workbench.png');
 
+  // 点击「导出片段」进入导出台
+  const exportBtn = await page.$('button:has-text("导出片段")');
+  if (exportBtn) {
+    await exportBtn.click();
+    await page.waitForTimeout(500);
+  }
+
+  // 截图 5：导出台
+  await page.screenshot({ path: '/tmp/sim-07-export.png' });
+  console.log('Saved /tmp/sim-07-export.png');
+
   await browser.close();
 }
 

@@ -1,5 +1,5 @@
 /**
- * 统一时间轴映射、速率比换算与并集区间计算核心算法
+ * 统一时间轴映射、速率比换算与交集重叠区间计算核心算法
  */
 
 import type {
@@ -18,13 +18,13 @@ export interface UnifiedTimelineResult {
   rate1: number; // 视频 1 相对速率比
   rate2: number; // 视频 2 相对速率比
   effectiveBpm: number; // 对齐后的有效基准 BPM
-  unionInterval: TimeInterval; // 统一时间轴并集区间 (秒)
+  intersectInterval: TimeInterval; // 统一时间轴有效重叠交集区间 (秒)
   span1: TimeInterval; // 视频 1 在统一时间轴上的区间
   span2: TimeInterval; // 视频 2 在统一时间轴上的区间
 }
 
 /**
- * 根据双方 BPM 与对齐策略计算各自的速率比及统一时间轴区间
+ * 根据双方 BPM 与对齐策略计算各自的速率比及统一时间轴交集区间
  */
 export function calculateUnifiedTimeline(
   params1: VideoTimelineParams,
@@ -66,14 +66,16 @@ export function calculateUnifiedTimeline(
   const start2 = -params2.anchorTime / rate2;
   const end2 = (params2.duration - params2.anchorTime) / rate2;
 
-  const unionStart = Math.min(start1, start2);
-  const unionEnd = Math.max(end1, end2);
+  // 取双视频有效重叠的交集区间 [intersectStart, intersectEnd]
+  const intersectStart = Math.max(start1, start2);
+  const rawIntersectEnd = Math.min(end1, end2);
+  const intersectEnd = Math.max(intersectStart + 0.1, rawIntersectEnd);
 
   return {
     rate1,
     rate2,
     effectiveBpm,
-    unionInterval: { start: unionStart, end: unionEnd },
+    intersectInterval: { start: intersectStart, end: intersectEnd },
     span1: { start: start1, end: end1 },
     span2: { start: start2, end: end2 },
   };

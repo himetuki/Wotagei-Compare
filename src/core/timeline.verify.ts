@@ -17,13 +17,13 @@ console.log('Rate1:', resLeft.rate1, '期望: 1');
 console.log('Rate2:', resLeft.rate2, '期望:', 160 / 150);
 console.log('Span1:', resLeft.span1); // [-2, 8]
 console.log('Span2:', resLeft.span2); // [-3 / (16/15) = -2.8125, 9 / (16/15) = 8.4375]
-console.log('Union:', resLeft.unionInterval);
+console.log('Intersect:', resLeft.intersectInterval); // [-2, 8]
 
 if (Math.abs(resLeft.rate1 - 1) > 1e-5 || Math.abs(resLeft.rate2 - (160 / 150)) > 1e-5) {
   throw new Error('速率比计算错误');
 }
-if (resLeft.unionInterval.start > -2.8 || resLeft.unionInterval.end < 8.4) {
-  throw new Error('并集区间计算错误');
+if (Math.abs(resLeft.intersectInterval.start - (-2)) > 1e-5 || Math.abs(resLeft.intersectInterval.end - 8) > 1e-5) {
+  throw new Error('交集区间计算错误: 期望 [-2, 8], 实际 ' + JSON.stringify(resLeft.intersectInterval));
 }
 
 // 2. 验证时间戳往返映射
@@ -43,4 +43,4 @@ if (isTauInVideoRange(-2.5, resLeft.span1) !== false || isTauInVideoRange(-2.5, 
   throw new Error('有效区间判断错误');
 }
 
-console.log('全部时间轴映射与并集区间算法验证通过！');
+console.log('全部时间轴映射与交集区间算法验证通过！');

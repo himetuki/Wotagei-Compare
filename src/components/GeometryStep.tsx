@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { Play, Pause, FlipHorizontal2, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Play, Pause, FlipHorizontal2 } from 'lucide-react';
 import type {
   ComparisonMode,
   TriLineCalibration,
@@ -121,20 +121,6 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
     }
   };
 
-  /**
-   * 按帧步进微调画面
-   */
-  const stepFrame = (frames: number) => {
-    const video = videoRef.current;
-    if (!video) return;
-    video.pause();
-    const nextTime = Math.max(
-      0,
-      Math.min(videoItem.duration, video.currentTime + frames * (1 / 30))
-    );
-    video.currentTime = nextTime;
-    setCurrentTime(nextTime);
-  };
 
   /**
    * 进度条拖拽跳转
@@ -261,7 +247,7 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
                 triLine.model === 'two-horizontal-one-vertical' ? 'active' : ''
               }`}
             >
-              两横一竖 (头/脚/中轴)
+              两横一竖
             </button>
             <button
               type="button"
@@ -270,7 +256,7 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
                 triLine.model === 'two-vertical-one-horizontal' ? 'active' : ''
               }`}
             >
-              两竖一横 (左脚/右脚/地面)
+              两竖一横
             </button>
           </div>
 
@@ -307,7 +293,7 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
 
           {triLine.model === 'two-horizontal-one-vertical' ? (
             <>
-              {/* 上横线：头顶 */}
+              {/* 上横线：头顶（标签位于黄线左下方） */}
               <div
                 className="calib-line-h"
                 style={
@@ -326,16 +312,16 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
                   style={
                     {
                       left: '10px',
-                      bottom: '24px',
+                      top: '12px',
                       '--line-color': '#f59e0b',
                     } as React.CSSProperties
                   }
                 >
-                  头顶 {(triLine.twoHOneV.yA * 100).toFixed(1)}%
+                  头顶
                 </span>
               </div>
 
-              {/* 下横线：脚底 */}
+              {/* 下横线：脚底（标签位于绿线右上方，避免贴底时被进度条遮挡） */}
               <div
                 className="calib-line-h"
                 style={
@@ -353,13 +339,13 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
                   className="calib-tag"
                   style={
                     {
-                      left: '10px',
-                      top: '24px',
+                      right: '10px',
+                      bottom: '12px',
                       '--line-color': '#10b981',
                     } as React.CSSProperties
                   }
                 >
-                  脚底 {(triLine.twoHOneV.yB * 100).toFixed(1)}%
+                  脚底
                 </span>
               </div>
 
@@ -387,7 +373,7 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
                     } as React.CSSProperties
                   }
                 >
-                  中轴 {(triLine.twoHOneV.x0 * 100).toFixed(1)}%
+                  中轴
                 </span>
               </div>
             </>
@@ -417,7 +403,7 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
                     } as React.CSSProperties
                   }
                 >
-                  左脚 {(triLine.twoVOneH.xA * 100).toFixed(1)}%
+                  左脚
                 </span>
               </div>
 
@@ -445,11 +431,11 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
                     } as React.CSSProperties
                   }
                 >
-                  右脚 {(triLine.twoVOneH.xB * 100).toFixed(1)}%
+                  右脚
                 </span>
               </div>
 
-              {/* 横线：地面 */}
+              {/* 横线：地面（标签位于右上方，避免贴底时遮挡） */}
               <div
                 className="calib-line-h"
                 style={
@@ -467,13 +453,13 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
                   className="calib-tag"
                   style={
                     {
-                      left: '10px',
-                      bottom: '24px',
+                      right: '10px',
+                      bottom: '12px',
                       '--line-color': '#10b981',
                     } as React.CSSProperties
                   }
                 >
-                  地面 {(triLine.twoVOneH.y0 * 100).toFixed(1)}%
+                  地面
                 </span>
               </div>
             </>
@@ -490,17 +476,6 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
           {isPlaying ? <Pause size={13} /> : <Play size={13} />}
           <span>{isPlaying ? '暂停' : '播放'}</span>
         </button>
-
-        <div className="control-group" style={{ gap: '4px' }}>
-          <button type="button" onClick={() => stepFrame(-1)} className="btn">
-            <ChevronLeft size={13} />
-            <span>1F</span>
-          </button>
-          <button type="button" onClick={() => stepFrame(1)} className="btn">
-            <span>1F</span>
-            <ChevronRight size={13} />
-          </button>
-        </div>
 
         <span className="mono-num" style={{ minWidth: '105px' }}>
           {currentTime.toFixed(2)}s / {videoItem.duration.toFixed(2)}s
