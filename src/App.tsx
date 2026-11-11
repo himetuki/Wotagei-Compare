@@ -1,21 +1,22 @@
 import React, { useState, useEffect } from 'react';
 import { ScreenOrientation } from '@capacitor/screen-orientation';
-import type { ComparisonMode, VideoGeometryConfig } from './types/geometry.ts';
+import type { ComparisonMode, VideoGeometryConfig, TriLineModelType } from './types/geometry.ts';
 import type { BpmAlignStrategy, VideoAudioInfo } from './types/timeline.ts';
 import type { WizardStep } from './types/wizard.ts';
 import { ImportStep, LoadedVideoItem } from './components/ImportStep.tsx';
 import { GeometryStep } from './components/GeometryStep.tsx';
 import { AudioStep } from './components/AudioStep.tsx';
-import { Workbench } from './components/Workbench.tsx';
+import { Workbench, HorizontalFlipIcon } from './components/Workbench.tsx';
 
-/** 全局顶部 6 步分段导航配置 */
-const WIZARD_STEPS: { id: WizardStep; num: string; label: string }[] = [
-  { id: 'import', num: '01', label: '导入' },
-  { id: 'geometry-video1', num: '02', label: '视频1空间' },
-  { id: 'geometry-video2', num: '03', label: '视频2空间' },
-  { id: 'audio-video1', num: '04', label: '视频1对拍' },
-  { id: 'audio-video2', num: '05', label: '视频2对拍' },
-  { id: 'workbench', num: '06', label: '对比台' },
+/** 全局顶部步骤分段导航配置 */
+const WIZARD_STEPS: { id: WizardStep; label: string }[] = [
+  { id: 'import', label: '导入' },
+  { id: 'geometry-video1', label: 'CH1空间' },
+  { id: 'geometry-video2', label: 'CH2空间' },
+  { id: 'audio-video1', label: 'CH1对拍' },
+  { id: 'audio-video2', label: 'CH2对拍' },
+  { id: 'workbench', label: '对比台' },
+  { id: 'export', label: '导出片段' },
 ];
 
 /** 可在任意位置点击手动修改 BPM 的顶栏徽章组件 */
@@ -101,6 +102,7 @@ export default function App(): React.ReactNode {
 
   const [step, setStep] = useState<WizardStep>('import');
   const [mode, setMode] = useState<ComparisonMode>('split-screen');
+  const [isWorkbenchToolbarExpanded, setIsWorkbenchToolbarExpanded] = useState<boolean>(false);
 
   // 持久保存双通道视频数据与标定状态
   const [video1, setVideo1] = useState<LoadedVideoItem | null>(null);
@@ -110,20 +112,52 @@ export default function App(): React.ReactNode {
   const [bpmStrategy, setBpmStrategy] = useState<BpmAlignStrategy>('left');
   const [customBpm, setCustomBpm] = useState<number>(160);
 
+  // 全局共享的三线正交标定模型（CH1 与 CH2 保持严格同步）
+  const [triLineModel, setTriLineModel] = useState<TriLineModelType>('two-horizontal-one-vertical');
+
   const isBothLoaded = Boolean(video1 && video2);
+
+  /**
+   * 同步更新双通道的三线正交标定模型
+   */
+  const handleTriLineModelChange = (model: TriLineModelType) => {
+    setTriLineModel(model);
+    setVideo1((prev) =>
+      prev
+        ? {
+            ...prev,
+            geometry: {
+              ...prev.geometry,
+              triLine: { ...prev.geometry.triLine, model },
+            },
+          }
+        : null
+    );
+    setVideo2((prev) =>
+      prev
+        ? {
+            ...prev,
+            geometry: {
+              ...prev.geometry,
+              triLine: { ...prev.geometry.triLine, model },
+            },
+          }
+        : null
+    );
+  };
 
   /**
    * 实时更新视频 1 空间几何标定参数
    */
   const handleGeometry1Change = (geo: VideoGeometryConfig) => {
-    setVideo1((prev) => (prev ? { ...prev, geometry: geo } : null));
+    setVideo1((prev) => (prev ? { ...prev, geometry: { ...geo, triLine: { ...geo.triLine, model: triLineModel } } } : null));
   };
 
   /**
    * 实时更新视频 2 空间几何标定参数
    */
   const handleGeometry2Change = (geo: VideoGeometryConfig) => {
-    setVideo2((prev) => (prev ? { ...prev, geometry: geo } : null));
+    setVideo2((prev) => (prev ? { ...prev, geometry: { ...geo, triLine: { ...geo.triLine, model: triLineModel } } } : null));
   };
 
   /**
@@ -150,7 +184,7 @@ export default function App(): React.ReactNode {
 
   return (
     <div className="app-shell">
-      {/* 顶部全局 6 步分段直达导航栏 */}
+      {/* 顶部全局步骤直达导航栏 */}
       <header className="top-nav">
         <div className="control-group" style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
           <nav className="step-track" aria-label="工作流步骤导航" style={{ overflow: 'hidden' }}>
@@ -162,10 +196,15 @@ export default function App(): React.ReactNode {
                   key={item.id}
                   type="button"
                   disabled={disabled}
-                  onClick={() => setStep(item.id)}
+                  onClick={() => {
+                    if (item.id === 'workbench' && step === 'workbench') {
+                      setIsWorkbenchToolbarExpanded((prev) => !prev);
+                    } else {
+                      setStep(item.id);
+                    }
+                  }}
                   className={`step-tab ${active ? 'active' : ''}`}
                 >
-                  <span className="step-num">{item.num}</span>
                   <span>{item.label}</span>
                 </button>
               );
@@ -174,39 +213,89 @@ export default function App(): React.ReactNode {
         </div>
 
         <div className="control-group" style={{ flexShrink: 0, gap: '6px' }}>
-          {video1 && (
-            <BpmBadge
-              channel={1}
-              bpm={video1.audioInfo?.userBpm ?? 160}
-              onChange={(newBpm) => {
-                const currentAudio: VideoAudioInfo = video1.audioInfo || {
-                  duration: video1.duration || 1,
-                  sampleRate: 44100,
-                  detectedBpm: newBpm,
-                  userBpm: newBpm,
-                  anchorTime: 1.0,
-                  waveform: new Float32Array(0),
-                };
-                handleAudio1Change({ ...currentAudio, userBpm: newBpm });
-              }}
-            />
+          {step === 'workbench' && (
+            <>
+              {video1 && (
+                <BpmBadge
+                  channel={1}
+                  bpm={video1.audioInfo?.userBpm ?? 160}
+                  onChange={(newBpm) => {
+                    const currentAudio: VideoAudioInfo = video1.audioInfo || {
+                      duration: video1.duration || 1,
+                      sampleRate: 44100,
+                      detectedBpm: newBpm,
+                      userBpm: newBpm,
+                      anchorTime: 1.0,
+                      waveform: new Float32Array(0),
+                    };
+                    handleAudio1Change({ ...currentAudio, userBpm: newBpm });
+                  }}
+                />
+              )}
+              {video2 && (
+                <BpmBadge
+                  channel={2}
+                  bpm={video2.audioInfo?.userBpm ?? 160}
+                  onChange={(newBpm) => {
+                    const currentAudio: VideoAudioInfo = video2.audioInfo || {
+                      duration: video2.duration || 1,
+                      sampleRate: 44100,
+                      detectedBpm: newBpm,
+                      userBpm: newBpm,
+                      anchorTime: 1.0,
+                      waveform: new Float32Array(0),
+                    };
+                    handleAudio2Change({ ...currentAudio, userBpm: newBpm }, bpmStrategy, customBpm);
+                  }}
+                />
+              )}
+            </>
           )}
-          {video2 && (
-            <BpmBadge
-              channel={2}
-              bpm={video2.audioInfo?.userBpm ?? 160}
-              onChange={(newBpm) => {
-                const currentAudio: VideoAudioInfo = video2.audioInfo || {
-                  duration: video2.duration || 1,
-                  sampleRate: 44100,
-                  detectedBpm: newBpm,
-                  userBpm: newBpm,
-                  anchorTime: 1.0,
-                  waveform: new Float32Array(0),
-                };
-                handleAudio2Change({ ...currentAudio, userBpm: newBpm }, bpmStrategy, customBpm);
-              }}
-            />
+
+          {(step === 'geometry-video1' || step === 'geometry-video2') && (video1 || video2) && (
+            <div className="control-group" style={{ gap: '6px' }}>
+              <select
+                value={triLineModel}
+                onChange={(e) => handleTriLineModelChange(e.target.value as TriLineModelType)}
+                className="select-input"
+                style={{
+                  height: '26px',
+                  backgroundColor: 'var(--bg-surface)',
+                  color: 'var(--text-primary)',
+                  border: '1px solid var(--border)',
+                  borderRadius: '4px',
+                  fontSize: '11.5px',
+                  padding: '0 6px',
+                  cursor: 'pointer',
+                }}
+              >
+                <option value="two-horizontal-one-vertical">两横一竖</option>
+                <option value="two-vertical-one-horizontal">两竖一横</option>
+              </select>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (step === 'geometry-video1' && video1) {
+                    handleGeometry1Change({
+                      ...video1.geometry,
+                      mirror: !video1.geometry.mirror,
+                    });
+                  } else if (step === 'geometry-video2' && video2) {
+                    handleGeometry2Change({
+                      ...video2.geometry,
+                      mirror: !video2.geometry.mirror,
+                    });
+                  }
+                }}
+                className={`btn ${(step === 'geometry-video1' ? video1?.geometry.mirror : video2?.geometry.mirror) ? 'btn-active' : ''}`}
+                style={{ height: '26px', padding: '0 8px', fontSize: '11.5px' }}
+                title={`${step === 'geometry-video1' ? 'CH1' : 'CH2'} 镜像切换`}
+              >
+                <HorizontalFlipIcon size={12} />
+                <span>镜像 {(step === 'geometry-video1' ? video1?.geometry.mirror : video2?.geometry.mirror) ? 'ON' : 'OFF'}</span>
+              </button>
+            </div>
           )}
         </div>
       </header>
@@ -217,11 +306,41 @@ export default function App(): React.ReactNode {
           <ImportStep
             initialVideo1={video1}
             initialVideo2={video2}
-            onUpdateVideo1={setVideo1}
-            onUpdateVideo2={setVideo2}
+            onUpdateVideo1={(item) =>
+              setVideo1({
+                ...item,
+                geometry: {
+                  ...item.geometry,
+                  triLine: { ...item.geometry.triLine, model: triLineModel },
+                },
+              })
+            }
+            onUpdateVideo2={(item) =>
+              setVideo2({
+                ...item,
+                geometry: {
+                  ...item.geometry,
+                  triLine: { ...item.geometry.triLine, model: triLineModel },
+                },
+              })
+            }
             onComplete={(data) => {
-              setVideo1(data.video1);
-              setVideo2(data.video2);
+              const v1 = {
+                ...data.video1,
+                geometry: {
+                  ...data.video1.geometry,
+                  triLine: { ...data.video1.geometry.triLine, model: triLineModel },
+                },
+              };
+              const v2 = {
+                ...data.video2,
+                geometry: {
+                  ...data.video2.geometry,
+                  triLine: { ...data.video2.geometry.triLine, model: triLineModel },
+                },
+              };
+              setVideo1(v1);
+              setVideo2(v2);
               setStep('geometry-video1');
             }}
           />
@@ -229,8 +348,10 @@ export default function App(): React.ReactNode {
 
         {step === 'geometry-video1' && video1 && (
           <GeometryStep
+            key="geo-1"
             videoItem={video1}
             videoIndex={1}
+            model={triLineModel}
             mode={mode}
             onBack={() => setStep('import')}
             onChange={handleGeometry1Change}
@@ -243,8 +364,10 @@ export default function App(): React.ReactNode {
 
         {step === 'geometry-video2' && video2 && (
           <GeometryStep
+            key="geo-2"
             videoItem={video2}
             videoIndex={2}
+            model={triLineModel}
             mode={mode}
             onBack={() => setStep('geometry-video1')}
             onChange={handleGeometry2Change}
@@ -259,7 +382,6 @@ export default function App(): React.ReactNode {
           <AudioStep
             videoItem={video1}
             videoIndex={1}
-            otherVideoItem={video2 || undefined}
             onBack={() => setStep('geometry-video2')}
             onChange={handleAudio1Change}
             onSave={(audio) => {
@@ -273,25 +395,30 @@ export default function App(): React.ReactNode {
           <AudioStep
             videoItem={video2}
             videoIndex={2}
-            otherVideoItem={video1 || undefined}
-            initialStrategy={bpmStrategy}
-            initialCustomBpm={customBpm}
             onBack={() => setStep('audio-video1')}
             onChange={handleAudio2Change}
-            onSave={(audio, strategy, targetCustomBpm) => {
-              handleAudio2Change(audio, strategy, targetCustomBpm);
+            onSave={(audio) => {
+              handleAudio2Change(audio);
               setStep('workbench');
             }}
           />
         )}
 
-        {step === 'workbench' && video1 && video2 && (
+        {(step === 'workbench' || step === 'export') && video1 && video2 && (
           <Workbench
             video1={video1}
             video2={video2}
             initialMode={mode}
             bpmStrategy={bpmStrategy}
             customBpm={customBpm}
+            isExport={step === 'export'}
+            isToolbarExpanded={isWorkbenchToolbarExpanded}
+            onToggleToolbar={() => setIsWorkbenchToolbarExpanded((prev) => !prev)}
+            onNavigate={(nextStep) => setStep(nextStep)}
+            onBpmStrategyChange={(strat, custom) => {
+              setBpmStrategy(strat);
+              if (typeof custom === 'number') setCustomBpm(custom);
+            }}
             onModeChange={setMode}
             onMirrorChange={(idx, m) => {
               if (idx === 1) {

@@ -141,8 +141,7 @@ export const ImportStep: React.FC<ImportStepProps> = ({
     isLoadingAudio: boolean,
     inputRef: React.RefObject<HTMLInputElement | null>
   ) => {
-    const chCode = index === 1 ? 'CH 01' : 'CH 02';
-    const chTitle = index === 1 ? '视频 1 · 基准源' : '视频 2 · 对比源';
+    const chCode = `CH${index}`;
     const badgeClass = index === 1 ? 'ch1' : 'ch2';
     const loadedClass = item ? (index === 1 ? 'loaded-ch1' : 'loaded-ch2') : '';
 
@@ -164,7 +163,7 @@ export const ImportStep: React.FC<ImportStepProps> = ({
           <div className="control-group">
             <span className={`tag-badge ${badgeClass}`}>{chCode}</span>
             <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>
-              {chTitle}
+              {item ? item.name : '选择本地视频'}
             </span>
           </div>
           <span className="mono-muted">

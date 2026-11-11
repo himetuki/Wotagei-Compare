@@ -8,27 +8,16 @@ import {
   Minus,
   Plus,
 } from 'lucide-react';
-import type { BpmAlignStrategy, VideoAudioInfo } from '../types/timeline.ts';
+import type { VideoAudioInfo } from '../types/timeline.ts';
 import type { LoadedVideoItem } from './ImportStep.tsx';
 import { TapTempoTracker } from '../core/audio.ts';
 
 interface AudioStepProps {
   videoItem: LoadedVideoItem;
   videoIndex: 1 | 2;
-  otherVideoItem?: LoadedVideoItem;
-  initialStrategy?: BpmAlignStrategy;
-  initialCustomBpm?: number;
   onBack: () => void;
-  onChange?: (
-    audioInfo: VideoAudioInfo,
-    strategy?: BpmAlignStrategy,
-    customTargetBpm?: number
-  ) => void;
-  onSave: (
-    audioInfo: VideoAudioInfo,
-    strategy?: BpmAlignStrategy,
-    customTargetBpm?: number
-  ) => void;
+  onChange?: (audioInfo: VideoAudioInfo) => void;
+  onSave: (audioInfo: VideoAudioInfo) => void;
 }
 
 /**
@@ -37,9 +26,6 @@ interface AudioStepProps {
 export const AudioStep: React.FC<AudioStepProps> = ({
   videoItem,
   videoIndex,
-  otherVideoItem,
-  initialStrategy = 'left',
-  initialCustomBpm = 160,
   onChange,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -64,8 +50,6 @@ export const AudioStep: React.FC<AudioStepProps> = ({
   const [currentTime, setCurrentTime] = useState<number>(anchorTime);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
 
-  const [strategy, setStrategy] = useState<BpmAlignStrategy>(initialStrategy);
-  const [customBpm, setCustomBpm] = useState<number>(initialCustomBpm);
   const [anchorInputText, setAnchorInputText] = useState<string>(anchorTime.toFixed(3));
 
   const tapTrackerRef = useRef<TapTempoTracker>(new TapTempoTracker());
@@ -87,28 +71,22 @@ export const AudioStep: React.FC<AudioStepProps> = ({
   }, [videoItem.url, videoIndex]);
 
   /**
-   * 实时将当前音频参数与 BPM 策略写回父级状态
+   * 实时将当前音频参数写回父级状态
    */
   const commitAudioState = (
     nextBpm: number,
-    nextAnchor: number,
-    nextStrategy: BpmAlignStrategy,
-    nextCustomBpm: number
+    nextAnchor: number
   ) => {
     setBpm(nextBpm);
     setAnchorTime(nextAnchor);
     setAnchorInputText(nextAnchor.toFixed(3));
-    setStrategy(nextStrategy);
-    setCustomBpm(nextCustomBpm);
     onChange?.(
       {
         ...initialAudio,
         duration: totalDuration,
         userBpm: nextBpm,
         anchorTime: nextAnchor,
-      },
-      nextStrategy,
-      nextCustomBpm
+      }
     );
   };
 
@@ -264,7 +242,7 @@ export const AudioStep: React.FC<AudioStepProps> = ({
   const setAsAnchor = () => {
     const video = videoRef.current;
     const t = video ? video.currentTime : currentTime;
-    commitAudioState(bpm, t, strategy, customBpm);
+    commitAudioState(bpm, t);
   };
 
   /**
@@ -311,7 +289,7 @@ export const AudioStep: React.FC<AudioStepProps> = ({
     setTapActive(true);
     const detected = tapTrackerRef.current.tap();
     if (detected) {
-      commitAudioState(detected, anchorTime, strategy, customBpm);
+      commitAudioState(detected, anchorTime);
     }
     setTimeout(() => setTapActive(false), 180);
   };
@@ -326,79 +304,6 @@ export const AudioStep: React.FC<AudioStepProps> = ({
         backgroundColor: 'var(--bg-canvas)',
       }}
     >
-      {/* 顶部子工具栏 */}
-      <div className="toolbar-row">
-        <div className="control-group" style={{ minWidth: 0, overflow: 'hidden' }}>
-          <span className={`tag-badge ${videoIndex === 1 ? 'ch1' : 'ch2'}`}>
-            CH 0{videoIndex}
-          </span>
-          <span
-            style={{
-              fontSize: '12px',
-              fontWeight: 600,
-              maxWidth: '130px',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {videoItem.name}
-          </span>
-          <span className="tag-badge">
-            锚点 {anchorTime.toFixed(3)}s
-          </span>
-        </div>
-
-        {/* 通道 2 附加全局 BPM 对齐策略 */}
-        {videoIndex === 2 && (
-          <div className="control-group" style={{ flexShrink: 0 }}>
-            <span className="mono-muted" style={{ fontSize: '11px' }}>BPM 对齐</span>
-            <div className="seg-group">
-              <button
-                type="button"
-                onClick={() => commitAudioState(bpm, anchorTime, 'none', customBpm)}
-                className={`seg-btn ${strategy === 'none' ? 'active' : ''}`}
-              >
-                原速
-              </button>
-              <button
-                type="button"
-                onClick={() => commitAudioState(bpm, anchorTime, 'left', customBpm)}
-                className={`seg-btn ${strategy === 'left' ? 'active' : ''}`}
-              >
-                随 CH1 ({otherVideoItem?.audioInfo?.userBpm || 160})
-              </button>
-              <button
-                type="button"
-                onClick={() => commitAudioState(bpm, anchorTime, 'right', customBpm)}
-                className={`seg-btn ${strategy === 'right' ? 'active' : ''}`}
-              >
-                随 CH2 ({bpm})
-              </button>
-              <button
-                type="button"
-                onClick={() => commitAudioState(bpm, anchorTime, 'custom', customBpm)}
-                className={`seg-btn ${strategy === 'custom' ? 'active' : ''}`}
-              >
-                手动
-              </button>
-            </div>
-
-            {strategy === 'custom' && (
-              <input
-                type="number"
-                className="num-input"
-                value={customBpm}
-                onChange={(e) => {
-                  const val = Math.max(1, parseInt(e.target.value, 10) || 160);
-                  commitAudioState(bpm, anchorTime, strategy, val);
-                }}
-              />
-            )}
-          </div>
-        )}
-      </div>
-
       {/* 中部视频监看区 */}
       <div
         style={{
@@ -476,7 +381,7 @@ export const AudioStep: React.FC<AudioStepProps> = ({
                   setAnchorInputText(e.target.value);
                   const parsed = parseFloat(e.target.value);
                   if (!isNaN(parsed) && parsed >= 0 && parsed <= totalDuration) {
-                    commitAudioState(bpm, parsed, strategy, customBpm);
+                    commitAudioState(bpm, parsed);
                   }
                 }}
                 onBlur={() => {
@@ -484,7 +389,7 @@ export const AudioStep: React.FC<AudioStepProps> = ({
                   if (!isNaN(parsed)) {
                     const clamped = Math.max(0, Math.min(totalDuration, parsed));
                     setAnchorInputText(clamped.toFixed(3));
-                    commitAudioState(bpm, clamped, strategy, customBpm);
+                    commitAudioState(bpm, clamped);
                   } else {
                     setAnchorInputText(anchorTime.toFixed(3));
                   }
@@ -515,7 +420,7 @@ export const AudioStep: React.FC<AudioStepProps> = ({
             <span className="mono-muted" style={{ fontSize: '11px' }}>BPM</span>
             <button
               type="button"
-              onClick={() => commitAudioState(Math.max(1, bpm - 1), anchorTime, strategy, customBpm)}
+              onClick={() => commitAudioState(Math.max(1, bpm - 1), anchorTime)}
               className="btn"
               style={{ padding: '0 6px', width: '24px' }}
             >
@@ -527,13 +432,13 @@ export const AudioStep: React.FC<AudioStepProps> = ({
               value={bpm}
               onChange={(e) => {
                 const val = Math.max(1, parseInt(e.target.value, 10) || 160);
-                commitAudioState(val, anchorTime, strategy, customBpm);
+                commitAudioState(val, anchorTime);
               }}
               style={{ width: '48px', height: '24px', fontSize: '11.5px' }}
             />
             <button
               type="button"
-              onClick={() => commitAudioState(bpm + 1, anchorTime, strategy, customBpm)}
+              onClick={() => commitAudioState(bpm + 1, anchorTime)}
               className="btn"
               style={{ padding: '0 6px', width: '24px' }}
             >

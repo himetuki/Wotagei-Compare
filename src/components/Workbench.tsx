@@ -4,9 +4,10 @@ import {
   Pause,
   Crosshair,
   RotateCcw,
-  Download,
   Layers,
   Columns2,
+  ChevronUp,
+  ChevronDown,
 } from 'lucide-react';
 import type {
   ComparisonMode,
@@ -27,6 +28,7 @@ import {
 import { renderComparisonFrame, ComparisonRenderState } from '../core/renderer.ts';
 import { SynthesizedMetronome } from '../core/metronome.ts';
 import type { LoadedVideoItem } from './ImportStep.tsx';
+import type { WizardStep } from '../types/wizard.ts';
 import { ExportPage } from './ExportPage.tsx';
 
 export interface WorkbenchProps {
@@ -35,6 +37,11 @@ export interface WorkbenchProps {
   initialMode: ComparisonMode;
   bpmStrategy: BpmAlignStrategy;
   customBpm: number;
+  isExport?: boolean;
+  isToolbarExpanded?: boolean;
+  onToggleToolbar?: () => void;
+  onNavigate?: (step: WizardStep) => void;
+  onBpmStrategyChange?: (strategy: BpmAlignStrategy, customBpm?: number) => void;
   onModeChange?: (mode: ComparisonMode) => void;
   onMirrorChange?: (videoIndex: 1 | 2, mirror: boolean) => void;
 }
@@ -42,7 +49,7 @@ export interface WorkbenchProps {
 const SLOW_MOTION_RATES: SlowMotionRate[] = [0.1, 0.15, 0.2, 0.3, 0.5, 0.75, 1.0];
 
 /** 专业标准水平左右镜像矢量图标 (沿垂直对称轴翻转) */
-const HorizontalFlipIcon: React.FC<{ size?: number }> = ({ size = 12 }) => (
+export const HorizontalFlipIcon: React.FC<{ size?: number }> = ({ size = 12 }) => (
   <svg
     width={size}
     height={size}
@@ -71,6 +78,11 @@ export const Workbench: React.FC<WorkbenchProps> = ({
   initialMode,
   bpmStrategy,
   customBpm,
+  isExport = false,
+  isToolbarExpanded = false,
+  onToggleToolbar,
+  onNavigate,
+  onBpmStrategyChange,
   onModeChange,
   onMirrorChange,
 }) => {
@@ -83,6 +95,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
   const [slowMotionRate, setSlowMotionRate] = useState<SlowMotionRate>(1.0);
   const [soundSource, setSoundSource] = useState<SoundSource>('metronome');
   const [relativeOpacity, setRelativeOpacity] = useState<number>(0);
+  const [isBpmMenuOpen, setIsBpmMenuOpen] = useState<boolean>(false);
 
   const [mirror1, setMirror1] = useState<boolean>(video1.geometry.mirror);
   const [mirror2, setMirror2] = useState<boolean>(video2.geometry.mirror);
@@ -478,7 +491,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
   };
 
   // 打开精简独立导出页
-  if (isExportPageOpen) {
+  if (isExportPageOpen || isExport) {
     return (
       <ExportPage
         video1={video1}
@@ -493,7 +506,13 @@ export const Workbench: React.FC<WorkbenchProps> = ({
         initialRate={slowMotionRate}
         initialSoundSource={soundSource}
         currentPlayTau={tau}
-        onBack={() => setIsExportPageOpen(false)}
+        onBack={() => {
+          if (onNavigate) {
+            onNavigate('workbench');
+          } else {
+            setIsExportPageOpen(false);
+          }
+        }}
       />
     );
   }
@@ -516,110 +535,131 @@ export const Workbench: React.FC<WorkbenchProps> = ({
       <video ref={videoRef1} src={video1.url} style={{ display: 'none' }} playsInline preload="auto" />
       <video ref={videoRef2} src={video2.url} style={{ display: 'none' }} playsInline preload="auto" />
 
-      {/* 顶部工作台参数栏 */}
-      <div className="toolbar-row">
-        {/* 左：对比模式切换与视口复位 */}
-        <div className="control-group" style={{ gap: '4px' }}>
-          <div className="seg-group">
-            <button
-              type="button"
-              onClick={() => handleModeChange('overlay')}
-              className={`seg-btn ${mode === 'overlay' ? 'active' : ''}`}
-              style={{ padding: '0 6px' }}
-            >
-              <Layers size={12} />
-              <span>叠加</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => handleModeChange('split-screen')}
-              className={`seg-btn ${mode === 'split-screen' ? 'active' : ''}`}
-              style={{ padding: '0 6px' }}
-            >
-              <Columns2 size={12} />
-              <span>分区</span>
-            </button>
-          </div>
-
-          {isViewportModified && (
-            <button
-              type="button"
-              onClick={() => setViewport({ scale: 1, offsetX: 0, offsetY: 0 })}
-              className="btn"
-              style={{ padding: '0 6px' }}
-            >
-              <RotateCcw size={12} />
-              <span className="mono-num">{viewport.scale.toFixed(1)}x</span>
-            </button>
-          )}
-        </div>
-
-        {/* 中：声音输出源与双通道独立镜像 */}
-        <div className="control-group" style={{ gap: '4px' }}>
-          <div className="seg-group">
-            {(
-              [
-                { id: 'metronome', label: '节拍器' },
-                { id: 'video1', label: 'CH1' },
-                { id: 'video2', label: 'CH2' },
-                { id: 'mute', label: '静音' },
-              ] as { id: SoundSource; label: string }[]
-            ).map((item) => (
+      {/* 顶部工作台参数栏（可折叠，默认收起） */}
+      {isToolbarExpanded && (
+        <div className="toolbar-row">
+          {/* 左：对比模式切换与视口复位（分区在前、叠加在后） */}
+          <div className="control-group" style={{ gap: '4px' }}>
+            <div className="seg-group">
               <button
-                key={item.id}
                 type="button"
-                onClick={() => setSoundSource(item.id)}
-                className={`seg-btn ${soundSource === item.id ? 'active' : ''}`}
+                onClick={() => handleModeChange('split-screen')}
+                className={`seg-btn ${mode === 'split-screen' ? 'active' : ''}`}
                 style={{ padding: '0 6px' }}
               >
-                {item.label}
+                <Columns2 size={12} />
+                <span>分区</span>
               </button>
-            ))}
+              <button
+                type="button"
+                onClick={() => handleModeChange('overlay')}
+                className={`seg-btn ${mode === 'overlay' ? 'active' : ''}`}
+                style={{ padding: '0 6px' }}
+              >
+                <Layers size={12} />
+                <span>叠加</span>
+              </button>
+            </div>
+
+            {isViewportModified && (
+              <button
+                type="button"
+                onClick={() => setViewport({ scale: 1, offsetX: 0, offsetY: 0 })}
+                className="btn"
+                style={{ padding: '0 6px' }}
+              >
+                <RotateCcw size={12} />
+                <span className="mono-num">{viewport.scale.toFixed(1)}x</span>
+              </button>
+            )}
           </div>
 
-          <div className="divider-v" />
+          {/* 中：声音输出源与双通道独立镜像 */}
+          <div className="control-group" style={{ gap: '4px' }}>
+            <div className="seg-group">
+              {(
+                [
+                  { id: 'metronome', label: '节拍器' },
+                  { id: 'video1', label: 'CH1' },
+                  { id: 'video2', label: 'CH2' },
+                  { id: 'mute', label: '静音' },
+                ] as { id: SoundSource; label: string }[]
+              ).map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setSoundSource(item.id)}
+                  className={`seg-btn ${soundSource === item.id ? 'active' : ''}`}
+                  style={{ padding: '0 6px' }}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
 
-          <button
-            type="button"
-            onClick={() => toggleMirror(1)}
-            className={`btn ${mirror1 ? 'btn-active' : ''}`}
-            style={{ padding: '0 6px' }}
-            title="视频 1 水平镜像"
-          >
-            <HorizontalFlipIcon size={12} />
-            <span>CH1</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => toggleMirror(2)}
-            className={`btn ${mirror2 ? 'btn-active' : ''}`}
-            style={{ padding: '0 6px' }}
-            title="视频 2 水平镜像"
-          >
-            <HorizontalFlipIcon size={12} />
-            <span>CH2</span>
-          </button>
-        </div>
+            <div className="divider-v" />
 
-        {/* 右：进入导出页 */}
-        <div className="control-group" style={{ flexShrink: 0 }}>
-          <button
-            type="button"
-            onClick={() => {
-              if (isPlaying) {
-                videoRef1.current?.pause();
-                videoRef2.current?.pause();
-                setIsPlaying(false);
-              }
-              setIsExportPageOpen(true);
-            }}
-            className="btn btn-accent"
-            style={{ padding: '0 10px' }}
-          >
-            <Download size={13} />
-            <span>导出片段</span>
-          </button>
+            <button
+              type="button"
+              onClick={() => toggleMirror(1)}
+              className={`btn ${mirror1 ? 'btn-active' : ''}`}
+              style={{ padding: '0 6px' }}
+              title="CH1 水平镜像"
+            >
+              <HorizontalFlipIcon size={12} />
+              <span>CH1</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => toggleMirror(2)}
+              className={`btn ${mirror2 ? 'btn-active' : ''}`}
+              style={{ padding: '0 6px' }}
+              title="CH2 水平镜像"
+            >
+              <HorizontalFlipIcon size={12} />
+              <span>CH2</span>
+            </button>
+          </div>
         </div>
+      )}
+
+      {/* 第一栏正中央外侧的长梯形展开/收起拉手按钮 */}
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'flex-start',
+          position: 'relative',
+          height: 0,
+          zIndex: 35,
+        }}
+      >
+        <button
+          type="button"
+          onClick={onToggleToolbar}
+          title={isToolbarExpanded ? '收起对比工具栏' : '展开对比工具栏'}
+          style={{
+            height: '14px',
+            width: '80px',
+            backgroundColor: 'var(--bg-panel)',
+            border: '1px solid var(--border)',
+            borderTop: 'none',
+            borderRadius: '0 0 6px 6px',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: 'pointer',
+            padding: 0,
+            color: 'var(--text-secondary)',
+            boxShadow: '0 2px 6px rgba(0,0,0,0.5)',
+            clipPath: isToolbarExpanded
+              ? 'polygon(12% 100%, 88% 100%, 100% 0, 0 0)'
+              : 'polygon(0 0, 100% 0, 88% 100%, 12% 100%)',
+            transition: 'background-color 0.15s, color 0.15s',
+          }}
+        >
+          {isToolbarExpanded ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+        </button>
       </div>
 
       {/* 中部单画布渲染视口 */}
@@ -707,33 +747,133 @@ export const Workbench: React.FC<WorkbenchProps> = ({
             </div>
           </div>
 
-          {mode === 'overlay' ? (
-            <div className="control-group" style={{ gap: '4px', flexShrink: 0 }}>
-              <span className="mono-muted" style={{ color: 'var(--ch1)', fontSize: '11px' }}>
-                CH1
-              </span>
-              <input
-                type="range"
-                className="slider"
-                min="-1"
-                max="1"
-                step="0.05"
-                value={relativeOpacity}
-                onChange={(e) => setRelativeOpacity(parseFloat(e.target.value))}
-                style={{ width: '70px' }}
-              />
-              <span className="mono-muted" style={{ color: 'var(--ch2)', fontSize: '11px' }}>
-                CH2
-              </span>
-              <span className="mono-num" style={{ minWidth: '34px', textAlign: 'right', fontSize: '11px' }}>
-                {relativeOpacity > 0 ? `+${relativeOpacity.toFixed(2)}` : relativeOpacity.toFixed(2)}
-              </span>
+          <div className="control-group" style={{ gap: '6px', flexShrink: 0 }}>
+            {mode === 'overlay' && (
+              <div className="control-group" style={{ gap: '4px' }}>
+                <span className="mono-muted" style={{ color: 'var(--ch1)', fontSize: '11px' }}>
+                  CH1
+                </span>
+                <input
+                  type="range"
+                  className="slider"
+                  min="-1"
+                  max="1"
+                  step="0.05"
+                  value={relativeOpacity}
+                  onChange={(e) => setRelativeOpacity(parseFloat(e.target.value))}
+                  style={{ width: '60px' }}
+                />
+                <span className="mono-muted" style={{ color: 'var(--ch2)', fontSize: '11px' }}>
+                  CH2
+                </span>
+                <span className="mono-num" style={{ minWidth: '32px', textAlign: 'right', fontSize: '11px' }}>
+                  {relativeOpacity > 0 ? `+${relativeOpacity.toFixed(2)}` : relativeOpacity.toFixed(2)}
+                </span>
+              </div>
+            )}
+
+            {/* 可向上展开的 BPM 对齐策略菜单 */}
+            <div style={{ position: 'relative' }}>
+              <button
+                type="button"
+                onClick={() => setIsBpmMenuOpen((prev) => !prev)}
+                className={`tag-badge ${isBpmMenuOpen ? 'ch1' : ''}`}
+                style={{ cursor: 'pointer', fontSize: '11px', height: '24px', gap: '3px' }}
+                title="点击选择 BPM 对齐策略"
+              >
+                <ChevronUp
+                  size={12}
+                  style={{
+                    transform: isBpmMenuOpen ? 'rotate(180deg)' : 'none',
+                    transition: 'transform 0.15s ease',
+                  }}
+                />
+                <span>SYNC {Math.round(timeline.effectiveBpm)} BPM</span>
+              </button>
+
+              {isBpmMenuOpen && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    bottom: 'calc(100% + 6px)',
+                    right: 0,
+                    backgroundColor: 'var(--bg-panel)',
+                    border: '1px solid var(--border-strong)',
+                    borderRadius: '6px',
+                    padding: '8px 10px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '6px',
+                    boxShadow: '0 6px 20px rgba(0,0,0,0.8)',
+                    zIndex: 50,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                    BPM 对齐策略
+                  </div>
+                  <div className="seg-group">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onBpmStrategyChange?.('none', customBpm);
+                      }}
+                      className={`seg-btn ${bpmStrategy === 'none' ? 'active' : ''}`}
+                      style={{ padding: '0 6px', fontSize: '11px' }}
+                    >
+                      原速
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onBpmStrategyChange?.('left', customBpm);
+                      }}
+                      className={`seg-btn ${bpmStrategy === 'left' ? 'active' : ''}`}
+                      style={{ padding: '0 6px', fontSize: '11px' }}
+                    >
+                      随 CH1 ({video1.audioInfo?.userBpm || 160})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onBpmStrategyChange?.('right', customBpm);
+                      }}
+                      className={`seg-btn ${bpmStrategy === 'right' ? 'active' : ''}`}
+                      style={{ padding: '0 6px', fontSize: '11px' }}
+                    >
+                      随 CH2 ({video2.audioInfo?.userBpm || 160})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onBpmStrategyChange?.('custom', customBpm);
+                      }}
+                      className={`seg-btn ${bpmStrategy === 'custom' ? 'active' : ''}`}
+                      style={{ padding: '0 6px', fontSize: '11px' }}
+                    >
+                      手动
+                    </button>
+                  </div>
+
+                  {bpmStrategy === 'custom' && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' }}>
+                      <span className="mono-muted" style={{ fontSize: '11px' }}>目标 BPM:</span>
+                      <input
+                        type="number"
+                        className="num-input"
+                        value={customBpm}
+                        onChange={(e) => {
+                          const val = Math.max(1, parseInt(e.target.value, 10) || 160);
+                          onBpmStrategyChange?.('custom', val);
+                        }}
+                        style={{ width: '56px', height: '22px', fontSize: '11px' }}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
-          ) : (
-            <span className="tag-badge" style={{ flexShrink: 0, fontSize: '11px' }}>
-              SYNC {Math.round(timeline.effectiveBpm)} BPM
-            </span>
-          )}
+          </div>
         </div>
       </div>
     </div>

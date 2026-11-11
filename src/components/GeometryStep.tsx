@@ -1,9 +1,10 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { Play, Pause, FlipHorizontal2 } from 'lucide-react';
+import { Play, Pause } from 'lucide-react';
 import type {
   ComparisonMode,
-  TriLineCalibration,
   TriLineModelType,
+  TwoHorizontalOneVertical,
+  TwoVerticalOneHorizontal,
   VideoGeometryConfig,
 } from '../types/geometry.ts';
 import type { LoadedVideoItem } from './ImportStep.tsx';
@@ -11,6 +12,7 @@ import type { LoadedVideoItem } from './ImportStep.tsx';
 interface GeometryStepProps {
   videoItem: LoadedVideoItem;
   videoIndex: 1 | 2;
+  model: TriLineModelType;
   mode: ComparisonMode;
   onBack: () => void;
   onChange?: (updatedGeometry: VideoGeometryConfig) => void;
@@ -23,6 +25,7 @@ interface GeometryStepProps {
 export const GeometryStep: React.FC<GeometryStepProps> = ({
   videoItem,
   videoIndex,
+  model,
   onChange,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -30,7 +33,8 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
   const frameRef = useRef<HTMLDivElement>(null);
 
   const [mirror, setMirror] = useState<boolean>(videoItem.geometry.mirror);
-  const [triLine, setTriLine] = useState<TriLineCalibration>(videoItem.geometry.triLine);
+  const [twoHOneV, setTwoHOneV] = useState<TwoHorizontalOneVertical>(videoItem.geometry.triLine.twoHOneV);
+  const [twoVOneH, setTwoVOneH] = useState<TwoVerticalOneHorizontal>(videoItem.geometry.triLine.twoVOneH);
 
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
@@ -40,10 +44,14 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
     height: 480,
   });
 
-  // 当切换视频通道时同步载入对应通道的几何配置
+  // 当切换视频通道或外部几何配置变化时同步载入对应通道的几何配置
   useEffect(() => {
     setMirror(videoItem.geometry.mirror);
-    setTriLine(videoItem.geometry.triLine);
+    setTwoHOneV(videoItem.geometry.triLine.twoHOneV);
+    setTwoVOneH(videoItem.geometry.triLine.twoVOneH);
+  }, [videoItem.geometry]);
+
+  useEffect(() => {
     setCurrentTime(0);
     setIsPlaying(false);
   }, [videoItem.url, videoIndex]);
@@ -84,28 +92,22 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
   /**
    * 同步更新几何状态并立即通知父级持久保存
    */
-  const commitGeometry = (nextMirror: boolean, nextTriLine: TriLineCalibration) => {
+  const commitGeometry = (
+    nextMirror: boolean,
+    nextTwoHOneV: TwoHorizontalOneVertical,
+    nextTwoVOneH: TwoVerticalOneHorizontal
+  ) => {
     setMirror(nextMirror);
-    setTriLine(nextTriLine);
+    setTwoHOneV(nextTwoHOneV);
+    setTwoVOneH(nextTwoVOneH);
     onChange?.({
       mirror: nextMirror,
-      triLine: nextTriLine,
+      triLine: {
+        model,
+        twoHOneV: nextTwoHOneV,
+        twoVOneH: nextTwoVOneH,
+      },
     });
-  };
-
-  /**
-   * 切换三线正交模型（两横一竖 / 两竖一横）
-   */
-  const handleModelSwitch = (model: TriLineModelType) => {
-    const nextTriLine: TriLineCalibration = { ...triLine, model };
-    commitGeometry(mirror, nextTriLine);
-  };
-
-  /**
-   * 切换当前通道水平镜像
-   */
-  const handleToggleMirror = () => {
-    commitGeometry(!mirror, triLine);
   };
 
   /**
@@ -145,62 +147,46 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
     const normX = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     const normY = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
 
-    let nextTriLine = triLine;
-    if (triLine.model === 'two-horizontal-one-vertical') {
+    let nextTwoHOneV = twoHOneV;
+    let nextTwoVOneH = twoVOneH;
+
+    if (model === 'two-horizontal-one-vertical') {
       if (draggingTarget === 'yA') {
-        nextTriLine = {
-          ...triLine,
-          twoHOneV: {
-            ...triLine.twoHOneV,
-            yA: Math.min(normY, triLine.twoHOneV.yB - 0.03),
-          },
+        nextTwoHOneV = {
+          ...twoHOneV,
+          yA: Math.min(normY, twoHOneV.yB - 0.03),
         };
       } else if (draggingTarget === 'yB') {
-        nextTriLine = {
-          ...triLine,
-          twoHOneV: {
-            ...triLine.twoHOneV,
-            yB: Math.max(normY, triLine.twoHOneV.yA + 0.03),
-          },
+        nextTwoHOneV = {
+          ...twoHOneV,
+          yB: Math.max(normY, twoHOneV.yA + 0.03),
         };
       } else if (draggingTarget === 'x0') {
-        nextTriLine = {
-          ...triLine,
-          twoHOneV: {
-            ...triLine.twoHOneV,
-            x0: normX,
-          },
+        nextTwoHOneV = {
+          ...twoHOneV,
+          x0: normX,
         };
       }
     } else {
       if (draggingTarget === 'xA') {
-        nextTriLine = {
-          ...triLine,
-          twoVOneH: {
-            ...triLine.twoVOneH,
-            xA: Math.min(normX, triLine.twoVOneH.xB - 0.03),
-          },
+        nextTwoVOneH = {
+          ...twoVOneH,
+          xA: Math.min(normX, twoVOneH.xB - 0.03),
         };
       } else if (draggingTarget === 'xB') {
-        nextTriLine = {
-          ...triLine,
-          twoVOneH: {
-            ...triLine.twoVOneH,
-            xB: Math.max(normX, triLine.twoVOneH.xA + 0.03),
-          },
+        nextTwoVOneH = {
+          ...twoVOneH,
+          xB: Math.max(normX, twoVOneH.xA + 0.03),
         };
       } else if (draggingTarget === 'y0') {
-        nextTriLine = {
-          ...triLine,
-          twoVOneH: {
-            ...triLine.twoVOneH,
-            y0: normY,
-          },
+        nextTwoVOneH = {
+          ...twoVOneH,
+          y0: normY,
         };
       }
     }
 
-    commitGeometry(mirror, nextTriLine);
+    commitGeometry(mirror, nextTwoHOneV, nextTwoVOneH);
   };
 
   const handlePointerUp = () => {
@@ -227,50 +213,6 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
     >
-      {/* 顶部标定参数控制栏 */}
-      <div className="toolbar-row">
-        <div className="control-group">
-          <span className={`tag-badge ${videoIndex === 1 ? 'ch1' : 'ch2'}`}>
-            CH 0{videoIndex}
-          </span>
-          <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
-            {videoItem.name}
-          </span>
-        </div>
-
-        <div className="control-group">
-          <div className="seg-group">
-            <button
-              type="button"
-              onClick={() => handleModelSwitch('two-horizontal-one-vertical')}
-              className={`seg-btn ${
-                triLine.model === 'two-horizontal-one-vertical' ? 'active' : ''
-              }`}
-            >
-              两横一竖
-            </button>
-            <button
-              type="button"
-              onClick={() => handleModelSwitch('two-vertical-one-horizontal')}
-              className={`seg-btn ${
-                triLine.model === 'two-vertical-one-horizontal' ? 'active' : ''
-              }`}
-            >
-              两竖一横
-            </button>
-          </div>
-
-          <button
-            type="button"
-            onClick={handleToggleMirror}
-            className={`btn ${mirror ? 'btn-active' : ''}`}
-          >
-            <FlipHorizontal2 size={13} />
-            <span>镜像 {mirror ? 'ON' : 'OFF'}</span>
-          </button>
-        </div>
-      </div>
-
       {/* 中间内接画幅与三线标尺层 */}
       <div ref={stageRef} className="calib-stage">
         <div
@@ -291,14 +233,14 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
             playsInline
           />
 
-          {triLine.model === 'two-horizontal-one-vertical' ? (
+          {model === 'two-horizontal-one-vertical' ? (
             <>
               {/* 上横线：头顶（标签位于黄线左下方） */}
               <div
                 className="calib-line-h"
                 style={
                   {
-                    top: `${triLine.twoHOneV.yA * 100}%`,
+                    top: `${twoHOneV.yA * 100}%`,
                     '--line-color': '#f59e0b',
                   } as React.CSSProperties
                 }
@@ -326,7 +268,7 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
                 className="calib-line-h"
                 style={
                   {
-                    top: `${triLine.twoHOneV.yB * 100}%`,
+                    top: `${twoHOneV.yB * 100}%`,
                     '--line-color': '#10b981',
                   } as React.CSSProperties
                 }
@@ -354,7 +296,7 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
                 className="calib-line-v"
                 style={
                   {
-                    left: `${triLine.twoHOneV.x0 * 100}%`,
+                    left: `${twoHOneV.x0 * 100}%`,
                     '--line-color': '#38bdf8',
                   } as React.CSSProperties
                 }
@@ -384,7 +326,7 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
                 className="calib-line-v"
                 style={
                   {
-                    left: `${triLine.twoVOneH.xA * 100}%`,
+                    left: `${twoVOneH.xA * 100}%`,
                     '--line-color': '#38bdf8',
                   } as React.CSSProperties
                 }
@@ -412,7 +354,7 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
                 className="calib-line-v"
                 style={
                   {
-                    left: `${triLine.twoVOneH.xB * 100}%`,
+                    left: `${twoVOneH.xB * 100}%`,
                     '--line-color': '#f59e0b',
                   } as React.CSSProperties
                 }
@@ -440,7 +382,7 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
                 className="calib-line-h"
                 style={
                   {
-                    top: `${triLine.twoVOneH.y0 * 100}%`,
+                    top: `${twoVOneH.y0 * 100}%`,
                     '--line-color': '#10b981',
                   } as React.CSSProperties
                 }

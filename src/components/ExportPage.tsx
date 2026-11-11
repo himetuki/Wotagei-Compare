@@ -1,11 +1,12 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { ArrowLeft, Download, X, RotateCcw, Check, Play, Pause } from 'lucide-react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { ArrowLeft, Download, X, Check, Play, Pause } from 'lucide-react';
 import type { ComparisonMode, ViewportTransform } from '../types/geometry.ts';
 import type { SlowMotionRate, SoundSource } from '../types/timeline.ts';
 import type { AlignmentTransform } from '../core/geometry.ts';
 import type { UnifiedTimelineResult } from '../core/timeline.ts';
-import { mapTauToSourceTime, isTauInVideoRange } from '../core/timeline.ts';
+import { mapTauToSourceTime, isTauInVideoRange, getPlaybackRate } from '../core/timeline.ts';
 import { renderComparisonFrame, ComparisonRenderState } from '../core/renderer.ts';
+import { SynthesizedMetronome } from '../core/metronome.ts';
 import type { LoadedVideoItem } from './ImportStep.tsx';
 import { VideoExporter, ExportProgressInfo } from '../core/exporter.ts';
 
@@ -52,6 +53,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
     Math.max(intersectStart, Math.min(intersectEnd, currentPlayTau))
   );
   const [isPreviewPlaying, setIsPreviewPlaying] = useState<boolean>(false);
+  const [draggingHandle, setDraggingHandle] = useState<'A' | 'B' | null>(null);
 
   const [isExporting, setIsExporting] = useState<boolean>(false);
   const [progress, setProgress] = useState<ExportProgressInfo>({
@@ -66,97 +68,85 @@ export const ExportPage: React.FC<ExportPageProps> = ({
 
   const exporterRef = useRef<VideoExporter | null>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
   const v1Ref = useRef<HTMLVideoElement>(null);
   const v2Ref = useRef<HTMLVideoElement>(null);
+  const metronomeRef = useRef<SynthesizedMetronome>(new SynthesizedMetronome());
+
+  // 配置双视频音轨与静音状态
+  useEffect(() => {
+    const v1 = v1Ref.current;
+    const v2 = v2Ref.current;
+    if (!v1 || !v2) return;
+
+    v1.preservesPitch = true;
+    v2.preservesPitch = true;
+
+    if (initialSoundSource === 'video1') {
+      v1.muted = false;
+      v1.volume = 1.0;
+      v2.muted = true;
+    } else if (initialSoundSource === 'video2') {
+      v1.muted = true;
+      v2.muted = false;
+      v2.volume = 1.0;
+    } else {
+      v1.muted = true;
+      v2.muted = true;
+    }
+  }, [initialSoundSource]);
 
   // 计算截取时长、慢放后成片时长与总帧数
   const clipDuration = Math.max(0.1, clipEnd - clipStart);
   const estimatedOutputDuration = clipDuration / initialRate;
   const estimatedFrames = Math.max(1, Math.round(estimatedOutputDuration * 30));
 
-  // 导出台连续预览播放循环
-  useEffect(() => {
-    if (!isPreviewPlaying) return;
+  const a1 =
+    typeof video1.audioInfo?.anchorTime === 'number'
+      ? video1.audioInfo.anchorTime
+      : 1.0;
+  const a2 =
+    typeof video2.audioInfo?.anchorTime === 'number'
+      ? video2.audioInfo.anchorTime
+      : 1.0;
 
-    let animId: number;
-    let lastTime = performance.now();
+  const previewTauRef = useRef<number>(previewTau);
+  previewTauRef.current = previewTau;
 
-    const previewLoop = (now: number) => {
-      const deltaSec = (now - lastTime) / 1000;
-      lastTime = now;
-
-      setPreviewTau((prev) => {
-        let next = prev + deltaSec * initialRate;
-        if (next > clipEnd) {
-          next = clipStart;
-        }
-        return next;
-      });
-
-      animId = requestAnimationFrame(previewLoop);
-    };
-
-    animId = requestAnimationFrame(previewLoop);
-    return () => cancelAnimationFrame(animId);
-  }, [isPreviewPlaying, clipStart, clipEnd, initialRate]);
-
-  // 当预览游标变化时更新单帧实时预览画布
-  useEffect(() => {
+  const drawPreviewFrame = useCallback(() => {
     const v1 = v1Ref.current;
     const v2 = v2Ref.current;
     const canvas = previewCanvasRef.current;
     if (!v1 || !v2 || !canvas) return;
 
-    const a1 =
-      typeof video1.audioInfo?.anchorTime === 'number'
-        ? video1.audioInfo.anchorTime
-        : 1.0;
-    const a2 =
-      typeof video2.audioInfo?.anchorTime === 'number'
-        ? video2.audioInfo.anchorTime
-        : 1.0;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
 
-    const t1 = mapTauToSourceTime(previewTau, a1, timeline.rate1);
-    const t2 = mapTauToSourceTime(previewTau, a2, timeline.rate2);
+    const currentTau = previewTauRef.current;
+    const v1Active = isTauInVideoRange(currentTau, timeline.span1);
+    const v2Active = isTauInVideoRange(currentTau, timeline.span2);
 
-    v1.currentTime = Math.max(0, Math.min(video1.duration, t1));
-    v2.currentTime = Math.max(0, Math.min(video2.duration, t2));
-
-    const drawPreview = () => {
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-
-      const v1Active = isTauInVideoRange(previewTau, timeline.span1);
-      const v2Active = isTauInVideoRange(previewTau, timeline.span2);
-
-      const renderState: ComparisonRenderState = {
-        mode: initialMode,
-        video1: v1,
-        video1Size: { width: video1.width, height: video1.height },
-        video1Active: v1Active,
-        mirror1: initialMirror1,
-        triLine1: video1.geometry.triLine,
-        video2: v2,
-        video2Size: { width: video2.width, height: video2.height },
-        video2Active: v2Active,
-        mirror2: initialMirror2,
-        triLine2: video2.geometry.triLine,
-        triLineTransform,
-        relativeOpacity: initialOpacity,
-        viewport: initialViewport,
-        canvasWidth: canvas.width,
-        canvasHeight: canvas.height,
-      };
-
-      renderComparisonFrame(ctx, renderState);
+    const renderState: ComparisonRenderState = {
+      mode: initialMode,
+      video1: v1,
+      video1Size: { width: video1.width, height: video1.height },
+      video1Active: v1Active,
+      mirror1: initialMirror1,
+      triLine1: video1.geometry.triLine,
+      video2: v2,
+      video2Size: { width: video2.width, height: video2.height },
+      video2Active: v2Active,
+      mirror2: initialMirror2,
+      triLine2: video2.geometry.triLine,
+      triLineTransform,
+      relativeOpacity: initialOpacity,
+      viewport: initialViewport,
+      canvasWidth: canvas.width,
+      canvasHeight: canvas.height,
     };
 
-    v1.addEventListener('seeked', drawPreview, { once: true });
-    v2.addEventListener('seeked', drawPreview, { once: true });
-    const timer = setTimeout(drawPreview, 60);
-    return () => clearTimeout(timer);
+    renderComparisonFrame(ctx, renderState);
   }, [
-    previewTau,
     initialMode,
     initialMirror1,
     initialMirror2,
@@ -167,6 +157,209 @@ export const ExportPage: React.FC<ExportPageProps> = ({
     video1,
     video2,
   ]);
+
+  const seekPreview = useCallback(
+    (targetTau: number) => {
+      const v1 = v1Ref.current;
+      const v2 = v2Ref.current;
+      const clampedTau = Math.max(intersectStart, Math.min(intersectEnd, targetTau));
+
+      previewTauRef.current = clampedTau;
+      setPreviewTau(clampedTau);
+
+      const t1 = mapTauToSourceTime(clampedTau, a1, timeline.rate1);
+      const t2 = mapTauToSourceTime(clampedTau, a2, timeline.rate2);
+
+      if (v1) v1.currentTime = Math.max(0, Math.min(video1.duration, t1));
+      if (v2) v2.currentTime = Math.max(0, Math.min(video2.duration, t2));
+
+      if (initialSoundSource === 'metronome') {
+        metronomeRef.current.reset(clampedTau, timeline.effectiveBpm);
+      }
+
+      drawPreviewFrame();
+    },
+    [a1, a2, drawPreviewFrame, intersectEnd, intersectStart, timeline.rate1, timeline.rate2, video1.duration, video2.duration]
+  );
+
+  // 初始加载绘制第一帧
+  useEffect(() => {
+    seekPreview(previewTau);
+  }, []);
+
+  // 播放 / 暂停切换
+  const togglePreviewPlay = () => {
+    const v1 = v1Ref.current;
+    const v2 = v2Ref.current;
+    if (!v1 || !v2) return;
+
+    if (isPreviewPlaying) {
+      v1.pause();
+      v2.pause();
+      setIsPreviewPlaying(false);
+    } else {
+      let startTau = previewTauRef.current;
+      if (startTau >= clipEnd - 0.05 || startTau < clipStart) {
+        startTau = clipStart;
+        seekPreview(startTau);
+      }
+
+      v1.playbackRate = getPlaybackRate(initialRate, timeline.rate1);
+      v2.playbackRate = getPlaybackRate(initialRate, timeline.rate2);
+
+      v1.preservesPitch = true;
+      v2.preservesPitch = true;
+      metronomeRef.current.reset(startTau, timeline.effectiveBpm);
+
+      if (initialSoundSource === 'video1') {
+        v1.muted = false;
+        v1.volume = 1.0;
+        v2.muted = true;
+      } else if (initialSoundSource === 'video2') {
+        v1.muted = true;
+        v2.muted = false;
+        v2.volume = 1.0;
+      } else {
+        v1.muted = true;
+        v2.muted = true;
+      }
+
+      v1.play().catch(() => {});
+      v2.play().catch(() => {});
+      setIsPreviewPlaying(true);
+    }
+  };
+
+  // 连续播放 RAF 同步主循环
+  useEffect(() => {
+    if (!isPreviewPlaying) return;
+
+    let animId: number;
+
+    const loop = () => {
+      const v1 = v1Ref.current;
+      const v2 = v2Ref.current;
+
+      if (v1 && v2 && !v1.paused) {
+        const currentTau = (v1.currentTime - a1) / timeline.rate1;
+        previewTauRef.current = currentTau;
+        setPreviewTau(currentTau);
+
+        const expectedT2 = mapTauToSourceTime(currentTau, a2, timeline.rate2);
+        const diff = v2.currentTime - expectedT2;
+        const baseRate2 = getPlaybackRate(initialRate, timeline.rate2);
+        if (Math.abs(diff) > 0.25) {
+          v2.currentTime = Math.max(0, Math.min(video2.duration, expectedT2));
+        } else if (Math.abs(diff) > 0.02) {
+          v2.playbackRate = baseRate2 * (diff < 0 ? 1.05 : 0.95);
+        } else {
+          v2.playbackRate = baseRate2;
+        }
+
+        if (currentTau >= clipEnd) {
+          const startT1 = mapTauToSourceTime(clipStart, a1, timeline.rate1);
+          const startT2 = mapTauToSourceTime(clipStart, a2, timeline.rate2);
+          v1.currentTime = Math.max(0, Math.min(video1.duration, startT1));
+          v2.currentTime = Math.max(0, Math.min(video2.duration, startT2));
+          previewTauRef.current = clipStart;
+          setPreviewTau(clipStart);
+          if (initialSoundSource === 'metronome') {
+            metronomeRef.current.reset(clipStart, timeline.effectiveBpm);
+          }
+        }
+
+        if (initialSoundSource === 'metronome') {
+          metronomeRef.current.update(
+            currentTau,
+            timeline.effectiveBpm,
+            true
+          );
+        }
+      }
+
+      drawPreviewFrame();
+      animId = requestAnimationFrame(loop);
+    };
+
+    animId = requestAnimationFrame(loop);
+    return () => {
+      cancelAnimationFrame(animId);
+      v1Ref.current?.pause();
+      v2Ref.current?.pause();
+    };
+  }, [
+    isPreviewPlaying,
+    clipStart,
+    clipEnd,
+    initialRate,
+    a1,
+    a2,
+    timeline,
+    video2.duration,
+    drawPreviewFrame,
+  ]);
+
+  const totalIntersectSpan = Math.max(0.01, intersectEnd - intersectStart);
+  const leftPct = Math.max(
+    0,
+    Math.min(100, ((clipStart - intersectStart) / totalIntersectSpan) * 100)
+  );
+  const rightPct = Math.max(
+    0,
+    Math.min(100, ((clipEnd - intersectStart) / totalIntersectSpan) * 100)
+  );
+
+  const handlePointerDown = (handle: 'A' | 'B', e: React.PointerEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    setDraggingHandle(handle);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    if (!draggingHandle || !trackRef.current) return;
+    const rect = trackRef.current.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const targetTau = intersectStart + ratio * totalIntersectSpan;
+
+    if (draggingHandle === 'A') {
+      const val = Math.max(intersectStart, Math.min(clipEnd - 0.2, targetTau));
+      setClipStart(val);
+      seekPreview(val);
+    } else if (draggingHandle === 'B') {
+      const val = Math.min(intersectEnd, Math.max(clipStart + 0.2, targetTau));
+      setClipEnd(val);
+      seekPreview(val);
+    }
+  };
+
+  const handlePointerUp = (e: React.PointerEvent) => {
+    if (draggingHandle) {
+      try {
+        (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+      } catch {}
+      setDraggingHandle(null);
+    }
+  };
+
+  const handleTrackClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!trackRef.current) return;
+    const rect = trackRef.current.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const targetTau = intersectStart + ratio * totalIntersectSpan;
+
+    const distA = Math.abs(targetTau - clipStart);
+    const distB = Math.abs(targetTau - clipEnd);
+    if (distA <= distB) {
+      const val = Math.max(intersectStart, Math.min(clipEnd - 0.2, targetTau));
+      setClipStart(val);
+      seekPreview(val);
+    } else {
+      const val = Math.min(intersectEnd, Math.max(clipStart + 0.2, targetTau));
+      setClipEnd(val);
+      seekPreview(val);
+    }
+  };
 
   /**
    * 启动 A-B 区间离线合成导出
@@ -247,8 +440,8 @@ export const ExportPage: React.FC<ExportPageProps> = ({
       }}
     >
       {/* 隐藏解码视频源 */}
-      <video ref={v1Ref} src={video1.url} style={{ display: 'none' }} preload="auto" muted />
-      <video ref={v2Ref} src={video2.url} style={{ display: 'none' }} preload="auto" muted />
+      <video ref={v1Ref} src={video1.url} style={{ display: 'none' }} preload="auto" playsInline />
+      <video ref={v2Ref} src={video2.url} style={{ display: 'none' }} preload="auto" playsInline />
 
       {/* 顶部栏：返回对比台与继承参数只读徽章 */}
       <div className="toolbar-row">
@@ -305,7 +498,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
               type="button"
               className="btn btn-accent"
               style={{ padding: '0 8px', height: '26px' }}
-              onClick={() => setIsPreviewPlaying((prev) => !prev)}
+              onClick={togglePreviewPlay}
             >
               {isPreviewPlaying ? <Pause size={12} /> : <Play size={12} />}
               <span style={{ fontSize: '11px' }}>{isPreviewPlaying ? '暂停' : '预览'}</span>
@@ -319,8 +512,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
               step="0.01"
               value={previewTau}
               onChange={(e) => {
-                setIsPreviewPlaying(false);
-                setPreviewTau(parseFloat(e.target.value));
+                seekPreview(parseFloat(e.target.value));
               }}
               style={{ flex: 1 }}
             />
@@ -342,113 +534,171 @@ export const ExportPage: React.FC<ExportPageProps> = ({
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: '11.5px', fontWeight: 600, color: 'var(--text-secondary)' }}>
-                起止区间截取 (交集范围)
+              <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                导出区间
               </span>
-              <button
-                type="button"
-                className="btn"
-                style={{ height: '22px', padding: '0 6px', fontSize: '10.5px' }}
-                onClick={() => {
-                  setIsPreviewPlaying(false);
-                  setClipStart(intersectStart);
-                  setClipEnd(intersectEnd);
-                  setPreviewTau(intersectStart);
+              <span className="mono-muted" style={{ fontSize: '11px' }}>
+                已选 {clipDuration.toFixed(2)}s · 交集全长 {(intersectEnd - intersectStart).toFixed(1)}s
+              </span>
+            </div>
+
+            {/* 统一交集轴标定卡片 */}
+            <div
+              style={{
+                backgroundColor: 'var(--bg-surface)',
+                border: '1px solid var(--border)',
+                borderRadius: '4px',
+                padding: '6px 8px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '6px',
+              }}
+            >
+              {/* 快捷标记与数值反馈 */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <span className="mono-num" style={{ color: 'var(--accent)', fontSize: '11px', fontWeight: 600 }}>
+                    IN (A): {clipStart >= 0 ? `+${clipStart.toFixed(2)}s` : `${clipStart.toFixed(2)}s`}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{ height: '20px', padding: '0 6px', fontSize: '10.5px' }}
+                    onClick={() => {
+                      if (isPreviewPlaying) togglePreviewPlay();
+                      const val = Math.min(previewTau, clipEnd - 0.2);
+                      setClipStart(val);
+                      seekPreview(val);
+                    }}
+                  >
+                    设当前为 A
+                  </button>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{ height: '20px', padding: '0 6px', fontSize: '10.5px' }}
+                    onClick={() => {
+                      if (isPreviewPlaying) togglePreviewPlay();
+                      const val = Math.max(previewTau, clipStart + 0.2);
+                      setClipEnd(val);
+                      seekPreview(val);
+                    }}
+                  >
+                    设当前为 B
+                  </button>
+                  <span className="mono-num" style={{ color: 'var(--ch2)', fontSize: '11px', fontWeight: 600 }}>
+                    OUT (B): {clipEnd >= 0 ? `+${clipEnd.toFixed(2)}s` : `${clipEnd.toFixed(2)}s`}
+                  </span>
+                </div>
+              </div>
+
+              {/* 单轨双端点标定轴线 */}
+              <div
+                style={{
+                  padding: '0 12px',
+                  margin: '4px 0',
                 }}
               >
-                <RotateCcw size={10} />
-                <span className="mono-num">
-                  全片 {(intersectEnd - intersectStart).toFixed(1)}s
-                </span>
-              </button>
-            </div>
-
-            {/* 起点 A */}
-            <div
-              style={{
-                backgroundColor: 'var(--bg-surface)',
-                border: '1px solid var(--border)',
-                borderRadius: '4px',
-                padding: '4px 8px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '2px',
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span className="mono-num" style={{ color: 'var(--accent)', fontSize: '11px', fontWeight: 600 }}>
-                  IN (A): {clipStart >= 0 ? `+${clipStart.toFixed(2)}s` : `${clipStart.toFixed(2)}s`}
-                </span>
-                <button
-                  type="button"
-                  className="btn"
-                  style={{ height: '20px', padding: '0 6px', fontSize: '10.5px' }}
-                  onClick={() => {
-                    setIsPreviewPlaying(false);
-                    setClipStart(Math.min(previewTau, clipEnd - 0.2));
+                <div
+                  ref={trackRef}
+                  onClick={handleTrackClick}
+                  onPointerMove={handlePointerMove}
+                  onPointerUp={handlePointerUp}
+                  onPointerCancel={handlePointerUp}
+                  style={{
+                    position: 'relative',
+                    height: '28px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    cursor: 'pointer',
+                    userSelect: 'none',
+                    touchAction: 'none',
                   }}
                 >
-                  设当前为 A
-                </button>
-              </div>
-              <input
-                type="range"
-                className="slider"
-                min={intersectStart}
-                max={Math.max(intersectStart, clipEnd - 0.2)}
-                step="0.01"
-                value={clipStart}
-                onChange={(e) => {
-                  setIsPreviewPlaying(false);
-                  const val = parseFloat(e.target.value);
-                  setClipStart(val);
-                  setPreviewTau(val);
-                }}
-              />
-            </div>
+                  {/* 贯穿全长的底轨导线 */}
+                  <div
+                    style={{
+                      position: 'absolute',
+                      left: 0,
+                      right: 0,
+                      height: '6px',
+                      backgroundColor: 'var(--bg-canvas)',
+                      borderRadius: '3px',
+                      border: '1px solid var(--border)',
+                    }}
+                  />
 
-            {/* 终点 B */}
-            <div
-              style={{
-                backgroundColor: 'var(--bg-surface)',
-                border: '1px solid var(--border)',
-                borderRadius: '4px',
-                padding: '4px 8px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '2px',
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span className="mono-num" style={{ color: 'var(--ch2)', fontSize: '11px', fontWeight: 600 }}>
-                  OUT (B): {clipEnd >= 0 ? `+${clipEnd.toFixed(2)}s` : `${clipEnd.toFixed(2)}s`}
-                </span>
-                <button
-                  type="button"
-                  className="btn"
-                  style={{ height: '20px', padding: '0 6px', fontSize: '10.5px' }}
-                  onClick={() => {
-                    setIsPreviewPlaying(false);
-                    setClipEnd(Math.max(previewTau, clipStart + 0.2));
-                  }}
-                >
-                  设当前为 B
-                </button>
+                  {/* A-B 中间高亮覆盖条 */}
+                  <div
+                    style={{
+                      position: 'absolute',
+                      left: `${leftPct}%`,
+                      width: `${Math.max(0, rightPct - leftPct)}%`,
+                      height: '6px',
+                      backgroundColor: 'var(--accent)',
+                      opacity: 0.75,
+                      borderRadius: '2px',
+                    }}
+                  />
+
+                  {/* 左端点手柄 A (IN) */}
+                  <div
+                    onPointerDown={(e) => handlePointerDown('A', e)}
+                    style={{
+                      position: 'absolute',
+                      left: `${leftPct}%`,
+                      transform: 'translateX(-50%)',
+                      width: '24px',
+                      height: '24px',
+                      backgroundColor: 'var(--bg-surface)',
+                      border: '2px solid var(--accent)',
+                      borderRadius: '4px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      cursor: 'ew-resize',
+                      zIndex: draggingHandle === 'A' ? 20 : 10,
+                      boxShadow: '0 2px 6px rgba(0,0,0,0.6)',
+                    }}
+                    title="拖拽移动起点 A"
+                  >
+                    <span style={{ fontSize: '10px', fontWeight: 800, color: 'var(--accent)', lineHeight: 1 }}>
+                      A
+                    </span>
+                  </div>
+
+                  {/* 右端点手柄 B (OUT) */}
+                  <div
+                    onPointerDown={(e) => handlePointerDown('B', e)}
+                    style={{
+                      position: 'absolute',
+                      left: `${rightPct}%`,
+                      transform: 'translateX(-50%)',
+                      width: '24px',
+                      height: '24px',
+                      backgroundColor: 'var(--bg-surface)',
+                      border: '2px solid var(--ch2)',
+                      borderRadius: '4px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      cursor: 'ew-resize',
+                      zIndex: draggingHandle === 'B' ? 20 : 10,
+                      boxShadow: '0 2px 6px rgba(0,0,0,0.6)',
+                    }}
+                    title="拖拽移动终点 B"
+                  >
+                    <span style={{ fontSize: '10px', fontWeight: 800, color: 'var(--ch2)', lineHeight: 1 }}>
+                      B
+                    </span>
+                  </div>
+                </div>
               </div>
-              <input
-                type="range"
-                className="slider"
-                min={Math.min(intersectEnd, clipStart + 0.2)}
-                max={intersectEnd}
-                step="0.01"
-                value={clipEnd}
-                onChange={(e) => {
-                  setIsPreviewPlaying(false);
-                  const val = parseFloat(e.target.value);
-                  setClipEnd(val);
-                  setPreviewTau(val);
-                }}
-              />
             </div>
 
             {/* 成片规格统计网格 */}
