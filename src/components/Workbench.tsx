@@ -21,12 +21,11 @@ import type {
 import { calculateTriLineAlignment, AlignmentTransform } from '../core/geometry.ts';
 import {
   calculateUnifiedTimeline,
-  mapTauToSourceTime,
   isTauInVideoRange,
-  getPlaybackRate,
 } from '../core/timeline.ts';
 import { renderComparisonFrame, ComparisonRenderState } from '../core/renderer.ts';
 import { SynthesizedMetronome } from '../core/metronome.ts';
+import { DualVideoSyncEngine } from '../core/sync-engine.ts';
 import type { LoadedVideoItem } from './ImportStep.tsx';
 import type { WizardStep } from '../types/wizard.ts';
 import { ExportPage } from './ExportPage.tsx';
@@ -89,6 +88,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef1 = useRef<HTMLVideoElement>(null);
   const videoRef2 = useRef<HTMLVideoElement>(null);
+  const engineRef = useRef<DualVideoSyncEngine | null>(null);
 
   const [mode, setMode] = useState<ComparisonMode>(initialMode);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
@@ -148,77 +148,54 @@ export const Workbench: React.FC<WorkbenchProps> = ({
 
   const metronomeRef = useRef<SynthesizedMetronome>(new SynthesizedMetronome());
 
-  // 双视频独立寻道互斥与起播就绪防抖控制
-  const isSeeking1Ref = useRef<boolean>(false);
-  const isSeeking2Ref = useRef<boolean>(false);
-  const pendingTarget1Ref = useRef<number | null>(null);
-  const pendingTarget2Ref = useRef<number | null>(null);
-  const lastHardSeekTimeRef = useRef<number>(0);
-  const isStartingPlayRef = useRef<boolean>(false);
-
-  // 同步音频输出通道与变速不变调属性
+  // 初始化与连接 DualVideoSyncEngine
   useEffect(() => {
     const v1 = videoRef1.current;
     const v2 = videoRef2.current;
-    if (!v1 || !v2) return;
 
-    v1.preservesPitch = true;
-    v2.preservesPitch = true;
-
-    if (soundSource === 'video1') {
-      v1.muted = false;
-      v2.muted = true;
-    } else if (soundSource === 'video2') {
-      v1.muted = true;
-      v2.muted = false;
-    } else {
-      v1.muted = true;
-      v2.muted = true;
-    }
-  }, [soundSource]);
-
-  /**
-   * 单路视频安全寻道：正在寻道期间排队最新目标，绝不高频重复重置 currentTime
-   */
-  const safeSeek = useCallback(
-    (
-      video: HTMLVideoElement,
-      targetTime: number,
-      isSeekingRef: React.MutableRefObject<boolean>,
-      pendingTargetRef: React.MutableRefObject<number | null>,
-      onDone?: () => void
-    ) => {
-      const clamped = Math.max(0, Math.min(video.duration || 0, targetTime));
-      if (Math.abs(video.currentTime - clamped) < 0.005) {
-        onDone?.();
-        return;
-      }
-
-      if (isSeekingRef.current || video.seeking) {
-        pendingTargetRef.current = clamped;
-        return;
-      }
-
-      isSeekingRef.current = true;
-      pendingTargetRef.current = null;
-
-      const onSeeked = () => {
-        video.removeEventListener('seeked', onSeeked);
-        isSeekingRef.current = false;
-        if (pendingTargetRef.current !== null) {
-          const next = pendingTargetRef.current;
-          pendingTargetRef.current = null;
-          safeSeek(video, next, isSeekingRef, pendingTargetRef, onDone);
-        } else {
-          onDone?.();
+    const engine = new DualVideoSyncEngine(v1, v2, {
+      timeline,
+      anchor1: a1,
+      anchor2: a2,
+      soundSource,
+      slowMotionRate,
+      onTauUpdate: (nextTau) => {
+        setTau(nextTau);
+        tauRef.current = nextTau;
+        if (soundSource === 'metronome') {
+          metronomeRef.current.update(nextTau, timeline.effectiveBpm, true);
         }
-      };
+      },
+      onPlayingChange: (playing) => {
+        setIsPlaying(playing);
+      },
+    });
 
-      video.addEventListener('seeked', onSeeked, { once: true });
-      video.currentTime = clamped;
-    },
-    []
-  );
+    engineRef.current = engine;
+
+    return () => {
+      engine.destroy();
+      engineRef.current = null;
+    };
+  }, []);
+
+  // 当时间轴参数、声音源或慢放倍率变化时更新引擎配置
+  useEffect(() => {
+    engineRef.current?.updateConfig({
+      timeline,
+      anchor1: a1,
+      anchor2: a2,
+      soundSource,
+      slowMotionRate,
+    });
+  }, [timeline, a1, a2, soundSource, slowMotionRate]);
+
+  // 当视频 ref 挂载更新时同步给引擎
+  useEffect(() => {
+    if (videoRef1.current && videoRef2.current) {
+      engineRef.current?.attachVideos(videoRef1.current, videoRef2.current);
+    }
+  }, []);
 
   /**
    * 同步定位两路视频至统一时间轴位置
@@ -231,104 +208,21 @@ export const Workbench: React.FC<WorkbenchProps> = ({
       );
       setTau(clampedTau);
       tauRef.current = clampedTau;
-
       metronomeRef.current.reset(clampedTau, timeline.effectiveBpm);
-
-      const v1 = videoRef1.current;
-      const v2 = videoRef2.current;
-
-      const t1 = mapTauToSourceTime(clampedTau, a1, timeline.rate1);
-      const t2 = mapTauToSourceTime(clampedTau, a2, timeline.rate2);
-
-      let v1Finished = !v1 || !isFinite(t1);
-      let v2Finished = !v2 || !isFinite(t2);
-
-      const checkBoth = () => {
-        if (v1Finished && v2Finished) {
-          onComplete?.();
-        }
-      };
-
-      if (v1 && isFinite(t1)) {
-        safeSeek(v1, t1, isSeeking1Ref, pendingTarget1Ref, () => {
-          v1Finished = true;
-          checkBoth();
-        });
-      }
-      if (v2 && isFinite(t2)) {
-        safeSeek(v2, t2, isSeeking2Ref, pendingTarget2Ref, () => {
-          v2Finished = true;
-          checkBoth();
-        });
-      }
-
-      if (v1Finished && v2Finished) {
-        checkBoth();
-      }
+      engineRef.current?.seekToTau(clampedTau, onComplete);
     },
-    [timeline, a1, a2, safeSeek]
+    [timeline]
   );
 
   /**
-   * 切换播放与暂停状态（带起播就绪栅栏）
+   * 切换播放与暂停状态 (统一经过会合屏障联合起播)
    */
   const togglePlay = () => {
-    const v1 = videoRef1.current;
-    const v2 = videoRef2.current;
-    if (!v1 || !v2) return;
-
-    if (isPlaying || isStartingPlayRef.current) {
-      isStartingPlayRef.current = false;
-      v1.pause();
-      v2.pause();
-      setIsPlaying(false);
-      return;
-    }
-
-    let startTau = tauRef.current;
-    if (startTau >= timeline.intersectInterval.end - 0.05) {
-      startTau = timeline.intersectInterval.start;
-    }
-
-    isStartingPlayRef.current = true;
-
-    const executeStart = () => {
-      if (!isStartingPlayRef.current) return;
-      isStartingPlayRef.current = false;
-
-      metronomeRef.current.reset(startTau, timeline.effectiveBpm);
-
-      v1.playbackRate = getPlaybackRate(slowMotionRate, timeline.rate1);
-      v2.playbackRate = getPlaybackRate(slowMotionRate, timeline.rate2);
-
-      const v1Active = isTauInVideoRange(startTau, timeline.span1);
-      const v2Active = isTauInVideoRange(startTau, timeline.span2);
-
-      const plays: Promise<void>[] = [];
-      if (v1Active) plays.push(v1.play().catch(() => {}));
-      else v1.pause();
-
-      if (v2Active) plays.push(v2.play().catch(() => {}));
-      else v2.pause();
-
-      Promise.all(plays).then(() => {
-        setIsPlaying(true);
-      });
-    };
-
-    const isReady1 = !isSeeking1Ref.current && !v1.seeking && v1.readyState >= 2;
-    const isReady2 = !isSeeking2Ref.current && !v2.seeking && v2.readyState >= 2;
-
-    if (isReady1 && isReady2) {
-      executeStart();
+    if (isPlaying) {
+      engineRef.current?.pause();
     } else {
-      let timeoutId: number;
-      const onReady = () => {
-        window.clearTimeout(timeoutId);
-        executeStart();
-      };
-      timeoutId = window.setTimeout(onReady, 250);
-      seekToTau(startTau, onReady);
+      metronomeRef.current.reset(tauRef.current, timeline.effectiveBpm);
+      engineRef.current?.playFrom(tauRef.current);
     }
   };
 
@@ -337,34 +231,16 @@ export const Workbench: React.FC<WorkbenchProps> = ({
    */
   const handleRateChange = (rate: SlowMotionRate) => {
     setSlowMotionRate(rate);
-    const v1 = videoRef1.current;
-    const v2 = videoRef2.current;
-    if (v1 && v2) {
-      v1.playbackRate = getPlaybackRate(rate, timeline.rate1);
-      v2.playbackRate = getPlaybackRate(rate, timeline.rate2);
-    }
+    engineRef.current?.updateConfig({ slowMotionRate: rate });
   };
 
   /**
-   * 从锚点前 1s 快速起播
+   * 从锚点前 1s 快速起播 (原子会合屏障，初相位差严格为 0)
    */
   const playFromPreRoll = () => {
     const targetTau = Math.max(timeline.intersectInterval.start, -1.0);
-    seekToTau(targetTau, () => {
-      const v1 = videoRef1.current;
-      const v2 = videoRef2.current;
-      if (v1 && v2) {
-        metronomeRef.current.reset(targetTau, timeline.effectiveBpm);
-        v1.playbackRate = getPlaybackRate(slowMotionRate, timeline.rate1);
-        v2.playbackRate = getPlaybackRate(slowMotionRate, timeline.rate2);
-        Promise.all([
-          v1.play().catch(() => {}),
-          v2.play().catch(() => {}),
-        ]).then(() => {
-          setIsPlaying(true);
-        });
-      }
-    });
+    metronomeRef.current.reset(targetTau, timeline.effectiveBpm);
+    engineRef.current?.playFrom(targetTau);
   };
 
   /**
@@ -390,123 +266,11 @@ export const Workbench: React.FC<WorkbenchProps> = ({
     }
   };
 
-  // 主时钟与 PLL 锁相环同步渲染循环
+  // Canvas 2D 纯渲染循环 (时钟与调速由 DualVideoSyncEngine 统一驱动)
   useEffect(() => {
     let animId: number;
-    let lastTimestamp = performance.now();
 
-    const loop = (now: number) => {
-      const deltaSec = (now - lastTimestamp) / 1000;
-      lastTimestamp = now;
-
-      if (isPlaying) {
-        const v1 = videoRef1.current;
-        const v2 = videoRef2.current;
-
-        const baseRate1 = getPlaybackRate(slowMotionRate, timeline.rate1);
-        const baseRate2 = getPlaybackRate(slowMotionRate, timeline.rate2);
-
-        let currentTau = tauRef.current;
-        let masterVideo: HTMLVideoElement | null = null;
-        let masterRate = timeline.rate1;
-        let masterAnchor = a1;
-
-        if (soundSource === 'video2' && v2 && !v2.paused && v2.readyState >= 2) {
-          masterVideo = v2;
-          masterRate = timeline.rate2;
-          masterAnchor = a2;
-        } else if (v1 && !v1.paused && v1.readyState >= 2) {
-          masterVideo = v1;
-          masterRate = timeline.rate1;
-          masterAnchor = a1;
-        }
-
-        if (masterVideo) {
-          currentTau = (masterVideo.currentTime - masterAnchor) / masterRate;
-        } else {
-          currentTau += deltaSec * slowMotionRate;
-        }
-
-        if (currentTau > timeline.intersectInterval.end) {
-          seekToTau(timeline.intersectInterval.start);
-        } else {
-          tauRef.current = currentTau;
-          setTau(currentTau);
-
-          if (soundSource === 'metronome') {
-            metronomeRef.current.update(currentTau, timeline.effectiveBpm, true);
-          }
-
-          const v1Active = isTauInVideoRange(currentTau, timeline.span1);
-          const v2Active = isTauInVideoRange(currentTau, timeline.span2);
-
-          const expectedT1 = a1 + currentTau * timeline.rate1;
-          const expectedT2 = a2 + currentTau * timeline.rate2;
-
-          if (v1) {
-            if (v1Active) {
-              if (v1.paused) {
-                safeSeek(v1, expectedT1, isSeeking1Ref, pendingTarget1Ref, () => {
-                  v1.playbackRate = baseRate1;
-                  v1.play().catch(() => {});
-                });
-              } else if (masterVideo !== v1) {
-                const diff = v1.currentTime - expectedT1;
-                if (Math.abs(diff) > 0.3) {
-                  const canHardSeek =
-                    !isSeeking1Ref.current &&
-                    !v1.seeking &&
-                    now - lastHardSeekTimeRef.current > 600;
-                  if (canHardSeek) {
-                    lastHardSeekTimeRef.current = now;
-                    safeSeek(v1, expectedT1, isSeeking1Ref, pendingTarget1Ref);
-                  }
-                } else if (Math.abs(diff) > 0.03) {
-                  v1.playbackRate = baseRate1 * (diff < 0 ? 1.08 : 0.92);
-                } else {
-                  v1.playbackRate = baseRate1;
-                }
-              } else {
-                v1.playbackRate = baseRate1;
-              }
-            } else if (!v1.paused) {
-              v1.pause();
-            }
-          }
-
-          if (v2) {
-            if (v2Active) {
-              if (v2.paused) {
-                safeSeek(v2, expectedT2, isSeeking2Ref, pendingTarget2Ref, () => {
-                  v2.playbackRate = baseRate2;
-                  v2.play().catch(() => {});
-                });
-              } else if (masterVideo !== v2) {
-                const diff = v2.currentTime - expectedT2;
-                if (Math.abs(diff) > 0.3) {
-                  const canHardSeek =
-                    !isSeeking2Ref.current &&
-                    !v2.seeking &&
-                    now - lastHardSeekTimeRef.current > 600;
-                  if (canHardSeek) {
-                    lastHardSeekTimeRef.current = now;
-                    safeSeek(v2, expectedT2, isSeeking2Ref, pendingTarget2Ref);
-                  }
-                } else if (Math.abs(diff) > 0.03) {
-                  v2.playbackRate = baseRate2 * (diff < 0 ? 1.08 : 0.92);
-                } else {
-                  v2.playbackRate = baseRate2;
-                }
-              } else {
-                v2.playbackRate = baseRate2;
-              }
-            } else if (!v2.paused) {
-              v2.pause();
-            }
-          }
-        }
-      }
-
+    const renderLoop = () => {
       const canvas = canvasRef.current;
       const v1 = videoRef1.current;
       const v2 = videoRef2.current;
@@ -514,8 +278,9 @@ export const Workbench: React.FC<WorkbenchProps> = ({
       if (canvas && v1 && v2) {
         const ctx = canvas.getContext('2d');
         if (ctx) {
-          const v1Active = isTauInVideoRange(tauRef.current, timeline.span1);
-          const v2Active = isTauInVideoRange(tauRef.current, timeline.span2);
+          const currentTau = tauRef.current;
+          const v1Active = isTauInVideoRange(currentTau, timeline.span1);
+          const v2Active = isTauInVideoRange(currentTau, timeline.span2);
 
           const renderState: ComparisonRenderState = {
             mode,
@@ -540,27 +305,21 @@ export const Workbench: React.FC<WorkbenchProps> = ({
         }
       }
 
-      animId = requestAnimationFrame(loop);
+      animId = requestAnimationFrame(renderLoop);
     };
 
-    animId = requestAnimationFrame(loop);
+    animId = requestAnimationFrame(renderLoop);
     return () => cancelAnimationFrame(animId);
   }, [
-    isPlaying,
-    slowMotionRate,
-    timeline,
-    soundSource,
-    seekToTau,
-    video1,
-    video2,
     mode,
     mirror1,
     mirror2,
     triLineTransform,
     relativeOpacity,
     viewport,
-    a1,
-    a2,
+    timeline,
+    video1,
+    video2,
   ]);
 
   // 叠加视口单指平移与双指捏合缩放
