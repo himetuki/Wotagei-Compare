@@ -1,4 +1,4 @@
-import { detectBpmFromPcm, extractAudioWaveform } from './audio.ts';
+import { detectBpmFromPcm, detectBpmFromSlice, extractAudioWaveform } from './audio.ts';
 
 // 模拟生成一段 150 BPM 的打击乐鼓点 PCM 音频 (44100Hz, 持续 10 秒)
 const sampleRate = 44100;
@@ -37,6 +37,13 @@ console.log('测算 BPM:', detected);
 
 if (Math.abs(detected - targetBpm) > 2) {
   throw new Error(`BPM 测算偏差过大: 目标 ${targetBpm}, 实际 ${detected}`);
+}
+
+// 检测局部切片 BPM (截取 2s 至 8s)
+const sliceBpm = detectBpmFromSlice(pcm, sampleRate, 2.0, 8.0);
+console.log('切片 2.0s~8.0s 测算 BPM:', sliceBpm);
+if (Math.abs(sliceBpm - targetBpm) > 2) {
+  throw new Error(`切片 BPM 测算偏差过大: 期望 ${targetBpm}, 实际 ${sliceBpm}`);
 }
 
 console.log('音频 BPM 检测算法验证通过！');

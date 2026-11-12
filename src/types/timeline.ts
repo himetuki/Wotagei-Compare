@@ -19,6 +19,8 @@ export interface VideoAudioInfo {
   userBpm: number; // 用户确认或修改的 BPM
   anchorTime: number; // 对拍锚点时间戳 (秒)
   waveform: Float32Array; // 用于可视化展示的归一化波形峰值数据
+  trimRange?: TimeInterval; // 有效截取起止时间戳 (秒)
+  rawChannelData?: Float32Array; // 内存暂存的单声道 PCM 采样数据，用于局部重算 BPM
 }
 
 /** 统一时间轴映射配置 */

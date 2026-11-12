@@ -7,7 +7,7 @@ export type WizardStep =
   | 'import' // 导入两路视频
   | 'geometry-video1' // CH1 空间标定
   | 'geometry-video2' // CH2 空间标定
-  | 'audio-video1' // CH1 对拍标定
-  | 'audio-video2' // CH2 对拍标定
+  | 'audio-video1' // CH1 时间标定
+  | 'audio-video2' // CH2 时间标定
   | 'workbench' // 对比台
   | 'export'; // 导出片段

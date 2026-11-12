@@ -98,6 +98,8 @@ export const ImportStep: React.FC<ImportStepProps> = ({
           userBpm: audioData.detectedBpm,
           anchorTime: Math.min(1.0, audioData.duration / 4),
           waveform: audioData.waveform,
+          trimRange: { start: 0, end: audioData.duration },
+          rawChannelData: audioData.rawChannelData,
         };
         const fullItem: LoadedVideoItem = { ...baseItem, audioInfo: updatedAudio };
         if (index === 1) {
@@ -117,6 +119,8 @@ export const ImportStep: React.FC<ImportStepProps> = ({
           userBpm: 160,
           anchorTime: Math.min(1.0, baseItem.duration / 4),
           waveform: new Float32Array(1000).fill(0.2),
+          trimRange: { start: 0, end: baseItem.duration },
+          rawChannelData: new Float32Array(44100 * 2).fill(0),
         };
         const fullItem: LoadedVideoItem = { ...baseItem, audioInfo: fallbackAudio };
         if (index === 1) {

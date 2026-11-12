@@ -12,6 +12,7 @@ export interface VideoTimelineParams {
   duration: number; // 视频时长 (秒)
   bpm: number; // 视频当前 BPM
   anchorTime: number; // 对拍锚点 (秒)
+  trimRange?: TimeInterval; // 可选的有效截取区间 (秒)，未指定时默认 [0, duration]
 }
 
 export interface UnifiedTimelineResult {
@@ -59,14 +60,18 @@ export function calculateUnifiedTimeline(
     effectiveBpm = bpm1;
   }
 
-  // 映射到以锚点为 0 的统一时间轴区间 [start, end]
-  const start1 = -params1.anchorTime / rate1;
-  const end1 = (params1.duration - params1.anchorTime) / rate1;
+  // 获取两视频的有效截取区间（未设定时默认全片 0 ~ duration）
+  const trim1 = params1.trimRange || { start: 0, end: params1.duration };
+  const trim2 = params2.trimRange || { start: 0, end: params2.duration };
 
-  const start2 = -params2.anchorTime / rate2;
-  const end2 = (params2.duration - params2.anchorTime) / rate2;
+  // 映射到以各自锚点为 0 的统一时间轴区间 [start, end]
+  const start1 = (trim1.start - params1.anchorTime) / rate1;
+  const end1 = (trim1.end - params1.anchorTime) / rate1;
 
-  // 取双视频有效重叠的交集区间 [intersectStart, intersectEnd]
+  const start2 = (trim2.start - params2.anchorTime) / rate2;
+  const end2 = (trim2.end - params2.anchorTime) / rate2;
+
+  // 取双视频截取后的有效重叠交集区间 [intersectStart, intersectEnd]
   const intersectStart = Math.max(start1, start2);
   const rawIntersectEnd = Math.min(end1, end2);
   const intersectEnd = Math.max(intersectStart + 0.1, rawIntersectEnd);

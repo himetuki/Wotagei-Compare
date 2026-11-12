@@ -119,6 +119,36 @@ export function detectBpmFromPcm(
 }
 
 /**
+ * 基于指定时间窗口 [startSec, endSec] 的 PCM 切片测算局部 BPM
+ * @param pcm 单声道 Float32 PCM 数据
+ * @param sampleRate 采样率 (Hz)
+ * @param startSec 起始时间戳 (秒)
+ * @param endSec 结束时间戳 (秒)
+ */
+export function detectBpmFromSlice(
+  pcm: Float32Array,
+  sampleRate: number,
+  startSec: number,
+  endSec: number
+): number {
+  if (!pcm || pcm.length === 0 || sampleRate <= 0) return 160;
+
+  const validStart = Math.max(0, Math.min(startSec, endSec));
+  const validEnd = Math.max(startSec, endSec);
+
+  const startSample = Math.max(0, Math.floor(validStart * sampleRate));
+  const endSample = Math.min(pcm.length, Math.ceil(validEnd * sampleRate));
+
+  // 截取区间不足 1.5 秒时返回全量测算结果
+  if (endSample - startSample < sampleRate * 1.5) {
+    return detectBpmFromPcm(pcm, sampleRate);
+  }
+
+  const slice = pcm.subarray(startSample, endSample);
+  return detectBpmFromPcm(slice, sampleRate);
+}
+
+/**
  * 从本地视频/音频 File 对象中解码出单声道 PCM 数据并执行分析
  */
 export async function decodeAudioFromFile(file: File): Promise<{

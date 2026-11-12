@@ -118,11 +118,13 @@ export const Workbench: React.FC<WorkbenchProps> = ({
         duration: video1.duration,
         bpm: video1.audioInfo?.userBpm || 160,
         anchorTime: a1,
+        trimRange: video1.audioInfo?.trimRange,
       },
       {
         duration: video2.duration,
         bpm: video2.audioInfo?.userBpm || 160,
         anchorTime: a2,
+        trimRange: video2.audioInfo?.trimRange,
       },
       bpmStrategy,
       customBpm

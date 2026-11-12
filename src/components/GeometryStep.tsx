@@ -291,7 +291,7 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
                 </span>
               </div>
 
-              {/* 竖线：中轴 */}
+              {/* 竖线：中轴（标签水平居中正对垂直中轴线） */}
               <div
                 className="calib-line-v"
                 style={
@@ -309,8 +309,9 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
                   className="calib-tag"
                   style={
                     {
-                      top: '10px',
-                      left: '26px',
+                      top: '12px',
+                      left: '50%',
+                      transform: 'translateX(-50%)',
                       '--line-color': '#38bdf8',
                     } as React.CSSProperties
                   }
@@ -321,7 +322,7 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
             </>
           ) : (
             <>
-              {/* 左竖线：左脚 */}
+              {/* 左竖线：左脚（标签水平居中骑在线上） */}
               <div
                 className="calib-line-v"
                 style={
@@ -339,8 +340,9 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
                   className="calib-tag"
                   style={
                     {
-                      top: '10px',
-                      right: '26px',
+                      top: '12px',
+                      left: '50%',
+                      transform: 'translateX(-50%)',
                       '--line-color': '#38bdf8',
                     } as React.CSSProperties
                   }
@@ -349,7 +351,7 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
                 </span>
               </div>
 
-              {/* 右竖线：右脚 */}
+              {/* 右竖线：右脚（标签水平居中骑在线上） */}
               <div
                 className="calib-line-v"
                 style={
@@ -367,8 +369,9 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
                   className="calib-tag"
                   style={
                     {
-                      top: '10px',
-                      left: '26px',
+                      top: '12px',
+                      left: '50%',
+                      transform: 'translateX(-50%)',
                       '--line-color': '#f59e0b',
                     } as React.CSSProperties
                   }

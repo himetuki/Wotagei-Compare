@@ -8,9 +8,9 @@ import {
   Minus,
   Plus,
 } from 'lucide-react';
-import type { VideoAudioInfo } from '../types/timeline.ts';
+import type { VideoAudioInfo, TimeInterval } from '../types/timeline.ts';
 import type { LoadedVideoItem } from './ImportStep.tsx';
-import { TapTempoTracker } from '../core/audio.ts';
+import { TapTempoTracker, detectBpmFromSlice } from '../core/audio.ts';
 
 interface AudioStepProps {
   videoItem: LoadedVideoItem;
@@ -30,6 +30,7 @@ export const AudioStep: React.FC<AudioStepProps> = ({
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const waveformContainerRef = useRef<HTMLDivElement>(null);
 
   const initialAudio: VideoAudioInfo = videoItem.audioInfo || {
     duration: videoItem.duration,
@@ -38,10 +39,19 @@ export const AudioStep: React.FC<AudioStepProps> = ({
     userBpm: 160,
     anchorTime: 1.0,
     waveform: new Float32Array(1000).fill(0.25),
+    trimRange: { start: 0, end: videoItem.duration > 0 ? videoItem.duration : 1 },
   };
 
   const totalDuration =
     videoItem.duration > 0 ? videoItem.duration : initialAudio.duration || 1;
+
+  const [trimStart, setTrimStart] = useState<number>(
+    initialAudio.trimRange?.start ?? 0
+  );
+  const [trimEnd, setTrimEnd] = useState<number>(
+    initialAudio.trimRange?.end ?? totalDuration
+  );
+  const [draggingHandle, setDraggingHandle] = useState<'start' | 'end' | null>(null);
 
   const [bpm, setBpm] = useState<number>(initialAudio.userBpm || 160);
   const [anchorTime, setAnchorTime] = useState<number>(
@@ -55,39 +65,68 @@ export const AudioStep: React.FC<AudioStepProps> = ({
   const tapTrackerRef = useRef<TapTempoTracker>(new TapTempoTracker());
   const [tapActive, setTapActive] = useState<boolean>(false);
 
-  // 切换视频通道时同步恢复对应通道的音频配置
+  // 切换视频通道时同步恢复对应通道的音频与时间截取配置
   useEffect(() => {
     const audio = videoItem.audioInfo;
+    const dur = videoItem.duration > 0 ? videoItem.duration : audio?.duration || 1;
     const nextBpm = audio?.userBpm || 160;
     const nextAnchor = typeof audio?.anchorTime === 'number' ? audio.anchorTime : 1.0;
+    const nextTrimStart = audio?.trimRange?.start ?? 0;
+    const nextTrimEnd = audio?.trimRange?.end ?? dur;
+
     setBpm(nextBpm);
     setAnchorTime(nextAnchor);
     setAnchorInputText(nextAnchor.toFixed(3));
     setCurrentTime(nextAnchor);
+    setTrimStart(nextTrimStart);
+    setTrimEnd(nextTrimEnd);
     setIsPlaying(false);
     if (videoRef.current) {
       videoRef.current.currentTime = nextAnchor;
     }
-  }, [videoItem.url, videoIndex]);
+  }, [videoItem.url, videoIndex, videoItem.duration]);
 
   /**
-   * 实时将当前音频参数写回父级状态
+   * 实时将当前音频与时间截取参数写回父级状态
    */
   const commitAudioState = (
     nextBpm: number,
-    nextAnchor: number
+    nextAnchor: number,
+    nextTrim?: TimeInterval
   ) => {
+    const activeTrim = nextTrim || { start: trimStart, end: trimEnd };
     setBpm(nextBpm);
     setAnchorTime(nextAnchor);
     setAnchorInputText(nextAnchor.toFixed(3));
-    onChange?.(
-      {
-        ...initialAudio,
-        duration: totalDuration,
-        userBpm: nextBpm,
-        anchorTime: nextAnchor,
+    if (nextTrim) {
+      setTrimStart(nextTrim.start);
+      setTrimEnd(nextTrim.end);
+    }
+    onChange?.({
+      ...initialAudio,
+      duration: totalDuration,
+      userBpm: nextBpm,
+      anchorTime: nextAnchor,
+      trimRange: activeTrim,
+      rawChannelData: videoItem.audioInfo?.rawChannelData,
+    });
+  };
+
+  /**
+   * 拖拽手柄时根据当前有效截取区间重新计算 BPM
+   * 锚点时间戳与绝对位置严格维持不变
+   */
+  const recalculateBpmForTrim = (tStart: number, tEnd: number) => {
+    const pcm = videoItem.audioInfo?.rawChannelData;
+    const sampleRate = videoItem.audioInfo?.sampleRate || 44100;
+    let computedBpm = bpm;
+    if (pcm && pcm.length > 0 && sampleRate > 0) {
+      const detected = detectBpmFromSlice(pcm, sampleRate, tStart, tEnd);
+      if (detected > 0) {
+        computedBpm = detected;
       }
-    );
+    }
+    commitAudioState(computedBpm, anchorTime, { start: tStart, end: tEnd });
   };
 
   // 60fps 平滑更新当前播放时间游标
@@ -294,6 +333,42 @@ export const AudioStep: React.FC<AudioStepProps> = ({
     setTimeout(() => setTapActive(false), 180);
   };
 
+  /**
+   * 拖拽起止手柄 [ 和 ]
+   */
+  const handlePointerDown = (handle: 'start' | 'end', e: React.PointerEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    setDraggingHandle(handle);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    if (!draggingHandle || !waveformContainerRef.current) return;
+    const rect = waveformContainerRef.current.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const targetTime = ratio * totalDuration;
+
+    if (draggingHandle === 'start') {
+      const newStart = Math.max(0, Math.min(trimEnd - 0.5, targetTime));
+      setTrimStart(newStart);
+      recalculateBpmForTrim(newStart, trimEnd);
+    } else if (draggingHandle === 'end') {
+      const newEnd = Math.min(totalDuration, Math.max(trimStart + 0.5, targetTime));
+      setTrimEnd(newEnd);
+      recalculateBpmForTrim(trimStart, newEnd);
+    }
+  };
+
+  const handlePointerUp = (e: React.PointerEvent) => {
+    if (draggingHandle) {
+      try {
+        (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+      } catch {}
+      setDraggingHandle(null);
+    }
+  };
+
   return (
     <div
       style={{
@@ -332,7 +407,20 @@ export const AudioStep: React.FC<AudioStepProps> = ({
 
       {/* 底部波形与对拍控制面板 */}
       <div className="bottom-bar" style={{ gap: '8px' }}>
-        <div style={{ height: '56px', width: '100%' }}>
+        <div
+          ref={waveformContainerRef}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerUp}
+          style={{
+            position: 'relative',
+            height: '56px',
+            width: '100%',
+            overflow: 'hidden',
+            borderRadius: '4px',
+            userSelect: 'none',
+          }}
+        >
           <canvas
             ref={canvasRef}
             width={1200}
@@ -348,6 +436,148 @@ export const AudioStep: React.FC<AudioStepProps> = ({
               display: 'block',
             }}
           />
+
+          {/* 左侧非有效截取区遮罩 */}
+          <div
+            style={{
+              position: 'absolute',
+              top: 0,
+              bottom: 0,
+              left: 0,
+              width: `${(trimStart / totalDuration) * 100}%`,
+              backgroundColor: 'rgba(0, 0, 0, 0.65)',
+              pointerEvents: 'none',
+              borderRight: '1px dashed rgba(245, 158, 11, 0.6)',
+            }}
+          />
+
+          {/* 右侧非有效截取区遮罩 */}
+          <div
+            style={{
+              position: 'absolute',
+              top: 0,
+              bottom: 0,
+              left: `${(trimEnd / totalDuration) * 100}%`,
+              right: 0,
+              backgroundColor: 'rgba(0, 0, 0, 0.65)',
+              pointerEvents: 'none',
+              borderLeft: '1px dashed rgba(245, 158, 11, 0.6)',
+            }}
+          />
+
+          {/* 左截取手柄 [ */}
+          <div
+            onPointerDown={(e) => handlePointerDown('start', e)}
+            style={{
+              position: 'absolute',
+              left: `${(trimStart / totalDuration) * 100}%`,
+              top: 0,
+              bottom: 0,
+              transform: 'translateX(-50%)',
+              width: '28px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'ew-resize',
+              zIndex: 10,
+              touchAction: 'none',
+            }}
+            title="拖拽微调目标招式起点 ["
+          >
+            <div
+              style={{
+                width: '14px',
+                height: '42px',
+                backgroundColor: 'rgba(24, 24, 27, 0.95)',
+                border: '1.5px solid var(--accent)',
+                borderRadius: '3px 0 0 3px',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: '0 2px 8px rgba(0,0,0,0.8)',
+              }}
+            >
+              <span style={{ fontSize: '13px', fontWeight: 800, color: 'var(--accent)', lineHeight: 1 }}>
+                [
+              </span>
+            </div>
+            {/* 时间浮签 */}
+            <span
+              className="mono-num"
+              style={{
+                position: 'absolute',
+                top: '2px',
+                right: '16px',
+                fontSize: '10px',
+                backgroundColor: 'rgba(9, 9, 11, 0.85)',
+                color: 'var(--accent)',
+                padding: '1px 3px',
+                borderRadius: '2px',
+                pointerEvents: 'none',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {trimStart.toFixed(2)}s
+            </span>
+          </div>
+
+          {/* 右截取手柄 ] */}
+          <div
+            onPointerDown={(e) => handlePointerDown('end', e)}
+            style={{
+              position: 'absolute',
+              left: `${(trimEnd / totalDuration) * 100}%`,
+              top: 0,
+              bottom: 0,
+              transform: 'translateX(-50%)',
+              width: '28px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'ew-resize',
+              zIndex: 10,
+              touchAction: 'none',
+            }}
+            title="拖拽微调目标招式终点 ]"
+          >
+            <div
+              style={{
+                width: '14px',
+                height: '42px',
+                backgroundColor: 'rgba(24, 24, 27, 0.95)',
+                border: '1.5px solid var(--accent)',
+                borderRadius: '0 3px 3px 0',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: '0 2px 8px rgba(0,0,0,0.8)',
+              }}
+            >
+              <span style={{ fontSize: '13px', fontWeight: 800, color: 'var(--accent)', lineHeight: 1 }}>
+                ]
+              </span>
+            </div>
+            {/* 时间浮签 */}
+            <span
+              className="mono-num"
+              style={{
+                position: 'absolute',
+                top: '2px',
+                left: '16px',
+                fontSize: '10px',
+                backgroundColor: 'rgba(9, 9, 11, 0.85)',
+                color: 'var(--accent)',
+                padding: '1px 3px',
+                borderRadius: '2px',
+                pointerEvents: 'none',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {trimEnd.toFixed(2)}s
+            </span>
+          </div>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
@@ -403,6 +633,10 @@ export const AudioStep: React.FC<AudioStepProps> = ({
               <Volume2 size={13} />
               <span>试听</span>
             </button>
+
+            <span className="mono-muted" style={{ fontSize: '11px', whiteSpace: 'nowrap' }}>
+              招式 {(trimEnd - trimStart).toFixed(1)}s
+            </span>
           </div>
 
           {/* 右：单一真实源 TAP 测速与 BPM 调节区 */}

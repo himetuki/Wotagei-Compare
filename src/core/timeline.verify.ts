@@ -43,4 +43,26 @@ if (isTauInVideoRange(-2.5, resLeft.span1) !== false || isTauInVideoRange(-2.5, 
   throw new Error('有效区间判断错误');
 }
 
+// 4. 验证带截取区间 (trimRange) 的统一时间轴映射与交集计算
+const v1Trim = {
+  duration: 40,
+  bpm: 160,
+  anchorTime: 15,
+  trimRange: { start: 10, end: 30 }, // 截取 [10, 30] -> span1: [(10-15)/1, (30-15)/1] = [-5, 15]
+};
+const v2Trim = {
+  duration: 60,
+  bpm: 160,
+  anchorTime: 25,
+  trimRange: { start: 20, end: 45 }, // 截取 [20, 45] -> span2: [(20-25)/1, (45-25)/1] = [-5, 20]
+};
+const resTrim = calculateUnifiedTimeline(v1Trim, v2Trim, 'none');
+console.log('--- 测试带截取区间的统一时间轴交集 ---');
+console.log('Span1 trim:', resTrim.span1);
+console.log('Span2 trim:', resTrim.span2);
+console.log('Intersect trim:', resTrim.intersectInterval);
+if (Math.abs(resTrim.intersectInterval.start - (-5)) > 1e-5 || Math.abs(resTrim.intersectInterval.end - 15) > 1e-5) {
+  throw new Error('带截取区间的交集计算错误: 期望 [-5, 15], 实际 ' + JSON.stringify(resTrim.intersectInterval));
+}
+
 console.log('全部时间轴映射与交集区间算法验证通过！');

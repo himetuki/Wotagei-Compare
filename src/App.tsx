@@ -13,8 +13,8 @@ const WIZARD_STEPS: { id: WizardStep; label: string }[] = [
   { id: 'import', label: '导入' },
   { id: 'geometry-video1', label: 'CH1空间' },
   { id: 'geometry-video2', label: 'CH2空间' },
-  { id: 'audio-video1', label: 'CH1对拍' },
-  { id: 'audio-video2', label: 'CH2对拍' },
+  { id: 'audio-video1', label: 'CH1时间' },
+  { id: 'audio-video2', label: 'CH2时间' },
   { id: 'workbench', label: '对比台' },
   { id: 'export', label: '导出片段' },
 ];
