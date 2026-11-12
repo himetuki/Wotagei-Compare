@@ -9,7 +9,7 @@ import { renderComparisonFrame, ComparisonRenderState } from '../core/renderer.t
 import { SynthesizedMetronome } from '../core/metronome.ts';
 import { DualVideoSyncEngine } from '../core/sync-engine.ts';
 import type { LoadedVideoItem } from './ImportStep.tsx';
-import { VideoExporter, ExportProgressInfo } from '../core/exporter.ts';
+import { VideoExporter, ExportProgressInfo, isWebCodecsSupported } from '../core/exporter.ts';
 
 interface ExportPageProps {
   video1: LoadedVideoItem;
@@ -66,6 +66,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [savedNativePath, setSavedNativePath] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const webCodecsSupported = isWebCodecsSupported();
 
   const exporterRef = useRef<VideoExporter | null>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -360,9 +361,41 @@ export const ExportPage: React.FC<ExportPageProps> = ({
         backgroundColor: 'var(--bg-canvas)',
       }}
     >
-      {/* 隐藏解码视频源 */}
-      <video ref={v1Ref} src={video1.url} style={{ display: 'none' }} preload="auto" playsInline />
-      <video ref={v2Ref} src={video2.url} style={{ display: 'none' }} preload="auto" playsInline />
+      {/* 活跃挂载的底层解码视频源，避免老旧内核合成器停止帧刷新 */}
+      <video
+        ref={v1Ref}
+        src={video1.url}
+        preload="auto"
+        playsInline
+        muted
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '1px',
+          height: '1px',
+          opacity: 0.01,
+          pointerEvents: 'none',
+          zIndex: -9999,
+        }}
+      />
+      <video
+        ref={v2Ref}
+        src={video2.url}
+        preload="auto"
+        playsInline
+        muted
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '1px',
+          height: '1px',
+          opacity: 0.01,
+          pointerEvents: 'none',
+          zIndex: -9999,
+        }}
+      />
 
       {/* 顶部栏：返回对比台与继承参数只读徽章 */}
       <div className="toolbar-row">
@@ -663,6 +696,23 @@ export const ExportPage: React.FC<ExportPageProps> = ({
 
           {/* 底部进度与导出按钮 */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '2px' }}>
+            {!webCodecsSupported && (
+              <div
+                style={{
+                  backgroundColor: 'var(--bg-surface)',
+                  border: '1px solid var(--accent)',
+                  borderRadius: '4px',
+                  padding: '6px 8px',
+                  fontSize: '11px',
+                  lineHeight: '1.4',
+                  color: 'var(--text-secondary)',
+                }}
+              >
+                <span style={{ color: 'var(--accent)', fontWeight: 600 }}>提示：</span>
+                当前系统 WebView 内核低于 Chrome 94，WebCodecs 硬件视频编码器暂不可用。若需导出离线 MP4，可在应用商店升级「Android System WebView」；您仍可在对比台上流畅使用慢放与同台对比。
+              </div>
+            )}
+
             {isExporting && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>

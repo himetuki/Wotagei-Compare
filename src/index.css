@@ -66,8 +66,10 @@ body,
 .top-nav {
   height: calc(40px + var(--safe-top));
   padding-top: var(--safe-top);
+  padding-right: 12px;
   padding-right: max(12px, var(--safe-right));
   padding-bottom: 0;
+  padding-left: 12px;
   padding-left: max(12px, var(--safe-left));
   background-color: var(--bg-panel);
   border-bottom: 1px solid var(--border);
@@ -146,6 +148,7 @@ body,
   display: flex;
   align-items: center;
   justify-content: space-between;
+  padding: 0 12px;
   padding: 0 max(12px, var(--safe-right)) 0 max(12px, var(--safe-left));
   gap: 10px;
   flex-shrink: 0;
@@ -157,8 +160,11 @@ body,
   display: flex;
   flex-direction: column;
   padding-top: 6px;
+  padding-right: 12px;
   padding-right: max(12px, var(--safe-right));
+  padding-bottom: 6px;
   padding-bottom: max(6px, var(--safe-bottom));
+  padding-left: 12px;
   padding-left: max(12px, var(--safe-left));
   gap: 6px;
   flex-shrink: 0;
@@ -359,8 +365,11 @@ body,
   display: flex;
   flex-direction: column;
   padding-top: 16px;
+  padding-right: 20px;
   padding-right: max(20px, var(--safe-right));
+  padding-bottom: 16px;
   padding-bottom: max(16px, var(--safe-bottom));
+  padding-left: 20px;
   padding-left: max(20px, var(--safe-left));
   gap: 14px;
   background-color: var(--bg-canvas);
@@ -488,8 +497,11 @@ body,
   grid-template-columns: 1.35fr 1fr;
   gap: 12px;
   padding-top: 10px;
+  padding-right: 14px;
   padding-right: max(14px, var(--safe-right));
+  padding-bottom: 10px;
   padding-bottom: max(10px, var(--safe-bottom));
+  padding-left: 14px;
   padding-left: max(14px, var(--safe-left));
   min-height: 0;
 }

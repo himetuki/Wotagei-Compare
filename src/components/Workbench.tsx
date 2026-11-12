@@ -423,8 +423,41 @@ export const Workbench: React.FC<WorkbenchProps> = ({
         }}
       >
         {/* 隐藏视频解码源 */}
-        <video ref={videoRef1} src={video1.url} style={{ display: 'none' }} playsInline preload="auto" />
-        <video ref={videoRef2} src={video2.url} style={{ display: 'none' }} playsInline preload="auto" />
+        {/* 底层支撑视频节点：以不可见但常驻活跃的方式挂载，确保老旧内核 GPU 合成器持续刷新解码纹理 */}
+        <video
+          ref={videoRef1}
+          src={video1.url}
+          playsInline
+          preload="auto"
+          muted
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            width: '1px',
+            height: '1px',
+            opacity: 0.01,
+            pointerEvents: 'none',
+            zIndex: -9999,
+          }}
+        />
+        <video
+          ref={videoRef2}
+          src={video2.url}
+          playsInline
+          preload="auto"
+          muted
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            width: '1px',
+            height: '1px',
+            opacity: 0.01,
+            pointerEvents: 'none',
+            zIndex: -9999,
+          }}
+        />
 
         {/* 顶部工作台参数栏（可折叠，默认收起） */}
       {isToolbarExpanded && (

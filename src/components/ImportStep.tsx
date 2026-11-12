@@ -28,6 +28,74 @@ interface ImportStepProps {
 }
 
 /**
+ * 安全探测视频的真实分辨率与时长
+ * 具备 DOM 挂载注入、playsinline 与 2.5 秒硬超时保底能力
+ */
+function probeVideoMetadata(
+  url: string,
+  hostElement: HTMLElement | null
+): Promise<{ width: number; height: number; duration: number }> {
+  return new Promise((resolve) => {
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.setAttribute('playsinline', '');
+    video.setAttribute('webkit-playsinline', '');
+    video.preload = 'metadata';
+
+    let settled = false;
+    const finish = (result: { width: number; height: number; duration: number }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      video.onloadedmetadata = null;
+      video.oncanplay = null;
+      video.onerror = null;
+      try {
+        if (hostElement && hostElement.contains(video)) {
+          hostElement.removeChild(video);
+        }
+      } catch {}
+      resolve(result);
+    };
+
+    // 2.5 秒超时硬兜底：若老旧内核或特殊编码迟迟未触发事件，直接回退标准 1080p，绝不阻断用户
+    const timer = setTimeout(() => {
+      const fallbackW = video.videoWidth > 0 ? video.videoWidth : 1920;
+      const fallbackH = video.videoHeight > 0 ? video.videoHeight : 1080;
+      const fallbackDur = !isNaN(video.duration) && video.duration > 0 ? video.duration : 10;
+      finish({ width: fallbackW, height: fallbackH, duration: fallbackDur });
+    }, 2500);
+
+    const onReady = () => {
+      const w = video.videoWidth || 1920;
+      const h = video.videoHeight || 1080;
+      const dur = !isNaN(video.duration) && video.duration > 0 ? video.duration : 10;
+      finish({ width: w, height: h, duration: dur });
+    };
+
+    video.onloadedmetadata = onReady;
+    video.oncanplay = onReady;
+    video.onerror = () => {
+      finish({ width: 1920, height: 1080, duration: 10 });
+    };
+
+    video.src = url;
+
+    // 挂载至隐藏 DOM 节点唤醒老旧 Chromium 移动端媒体管道
+    if (hostElement) {
+      try {
+        hostElement.appendChild(video);
+      } catch {}
+    }
+
+    try {
+      video.load();
+    } catch {}
+  });
+}
+
+/**
  * 步骤 01：双通道本地视频导入面板
  */
 export const ImportStep: React.FC<ImportStepProps> = ({
@@ -41,99 +109,147 @@ export const ImportStep: React.FC<ImportStepProps> = ({
   const [video2, setVideo2] = useState<LoadedVideoItem | null>(initialVideo2);
   const [loadingAudio1, setLoadingAudio1] = useState(false);
   const [loadingAudio2, setLoadingAudio2] = useState(false);
+  const [loadingMeta1, setLoadingMeta1] = useState(false);
+  const [loadingMeta2, setLoadingMeta2] = useState(false);
 
   const fileInputRef1 = useRef<HTMLInputElement>(null);
   const fileInputRef2 = useRef<HTMLInputElement>(null);
+  const probeHostRef = useRef<HTMLDivElement>(null);
 
   /**
-   * 读取用户选择的本地视频文件，提取宽高时长并异步解码音轨测算初始 BPM
+   * 读取用户选择的本地视频文件
+   * 采用「乐观即时挂载 + 异步元数据/音轨并行探测」策略，彻底消除老旧内核卡死与因果倒置
    */
   const handleFileChange = async (
     e: React.ChangeEvent<HTMLInputElement>,
     index: 1 | 2
   ) => {
     const file = e.target.files?.[0];
+    // 清空 input 避免重选同一文件不触发 change 事件
+    e.target.value = '';
     if (!file) return;
 
     const url = URL.createObjectURL(file);
-    const tempVideo = document.createElement('video');
-    tempVideo.preload = 'metadata';
-    tempVideo.src = url;
 
-    tempVideo.onloadedmetadata = async () => {
-      const baseItem: LoadedVideoItem = {
-        file,
-        url,
-        name: file.name,
-        duration: tempVideo.duration || 1,
-        width: tempVideo.videoWidth || 1920,
-        height: tempVideo.videoHeight || 1080,
-        geometry: {
-          mirror: false,
-          triLine: {
-            model: 'two-horizontal-one-vertical',
-            twoHOneV: { yA: 0.22, yB: 0.78, x0: 0.5 },
-            twoVOneH: { xA: 0.38, xB: 0.62, y0: 0.85 },
-          },
+    // 1. 乐观即时挂载：一旦拿到 File 对象立即更新卡片 UI，消除界面假死与「未载入」停滞
+    const baseItem: LoadedVideoItem = {
+      file,
+      url,
+      name: file.name,
+      duration: 10,
+      width: 1920,
+      height: 1080,
+      geometry: {
+        mirror: false,
+        triLine: {
+          model: 'two-horizontal-one-vertical',
+          twoHOneV: { yA: 0.22, yB: 0.78, x0: 0.5 },
+          twoVOneH: { xA: 0.38, xB: 0.62, y0: 0.85 },
         },
-      };
+      },
+    };
 
+    if (index === 1) {
+      setVideo1(baseItem);
+      onUpdateVideo1?.(baseItem);
+      setLoadingMeta1(true);
+      setLoadingAudio1(true);
+    } else {
+      setVideo2(baseItem);
+      onUpdateVideo2?.(baseItem);
+      setLoadingMeta2(true);
+      setLoadingAudio2(true);
+    }
+
+    // 2. 异步探测真实视频分辨率与时长（带超时与 DOM 挂载保底）
+    const metaPromise = probeVideoMetadata(url, probeHostRef.current).then((meta) => {
       if (index === 1) {
-        setVideo1(baseItem);
-        onUpdateVideo1?.(baseItem);
-        setLoadingAudio1(true);
+        setVideo1((prev) => {
+          if (!prev || prev.url !== url) return prev;
+          const updated = { ...prev, width: meta.width, height: meta.height, duration: meta.duration };
+          onUpdateVideo1?.(updated);
+          return updated;
+        });
+        setLoadingMeta1(false);
       } else {
-        setVideo2(baseItem);
-        onUpdateVideo2?.(baseItem);
-        setLoadingAudio2(true);
+        setVideo2((prev) => {
+          if (!prev || prev.url !== url) return prev;
+          const updated = { ...prev, width: meta.width, height: meta.height, duration: meta.duration };
+          onUpdateVideo2?.(updated);
+          return updated;
+        });
+        setLoadingMeta2(false);
       }
+      return meta;
+    });
 
-      // 解码音轨 PCM 并测算初始 BPM
+    // 3. 异步解码音轨 PCM 并测算初始 BPM（带防 OOM 与 FileReader 兜底）
+    const audioPromise = (async () => {
       try {
         const audioData = await decodeAudioFromFile(file);
+        const meta = await metaPromise.catch(() => ({ duration: audioData.duration }));
         const updatedAudio: VideoAudioInfo = {
-          duration: audioData.duration,
+          duration: audioData.duration || meta.duration,
           sampleRate: audioData.sampleRate,
           detectedBpm: audioData.detectedBpm,
           userBpm: audioData.detectedBpm,
-          anchorTime: Math.min(1.0, audioData.duration / 4),
+          anchorTime: Math.min(1.0, (audioData.duration || meta.duration) / 4),
           waveform: audioData.waveform,
-          trimRange: { start: 0, end: audioData.duration },
+          trimRange: { start: 0, end: audioData.duration || meta.duration },
           rawChannelData: audioData.rawChannelData,
         };
-        const fullItem: LoadedVideoItem = { ...baseItem, audioInfo: updatedAudio };
+
         if (index === 1) {
-          setVideo1(fullItem);
-          onUpdateVideo1?.(fullItem);
+          setVideo1((prev) => {
+            if (!prev || prev.url !== url) return prev;
+            const fullItem = { ...prev, audioInfo: updatedAudio };
+            onUpdateVideo1?.(fullItem);
+            return fullItem;
+          });
           setLoadingAudio1(false);
         } else {
-          setVideo2(fullItem);
-          onUpdateVideo2?.(fullItem);
+          setVideo2((prev) => {
+            if (!prev || prev.url !== url) return prev;
+            const fullItem = { ...prev, audioInfo: updatedAudio };
+            onUpdateVideo2?.(fullItem);
+            return fullItem;
+          });
           setLoadingAudio2(false);
         }
       } catch {
+        const meta = await metaPromise.catch(() => ({ duration: 10 }));
         const fallbackAudio: VideoAudioInfo = {
-          duration: baseItem.duration,
+          duration: meta.duration,
           sampleRate: 44100,
           detectedBpm: 160,
           userBpm: 160,
-          anchorTime: Math.min(1.0, baseItem.duration / 4),
+          anchorTime: Math.min(1.0, meta.duration / 4),
           waveform: new Float32Array(1000).fill(0.2),
-          trimRange: { start: 0, end: baseItem.duration },
+          trimRange: { start: 0, end: meta.duration },
           rawChannelData: new Float32Array(44100 * 2).fill(0),
         };
-        const fullItem: LoadedVideoItem = { ...baseItem, audioInfo: fallbackAudio };
+
         if (index === 1) {
-          setVideo1(fullItem);
-          onUpdateVideo1?.(fullItem);
+          setVideo1((prev) => {
+            if (!prev || prev.url !== url) return prev;
+            const fullItem = { ...prev, audioInfo: fallbackAudio };
+            onUpdateVideo1?.(fullItem);
+            return fullItem;
+          });
           setLoadingAudio1(false);
         } else {
-          setVideo2(fullItem);
-          onUpdateVideo2?.(fullItem);
+          setVideo2((prev) => {
+            if (!prev || prev.url !== url) return prev;
+            const fullItem = { ...prev, audioInfo: fallbackAudio };
+            onUpdateVideo2?.(fullItem);
+            return fullItem;
+          });
           setLoadingAudio2(false);
         }
       }
-    };
+    })();
+
+    await Promise.allSettled([metaPromise, audioPromise]);
   };
 
   /**
@@ -143,6 +259,7 @@ export const ImportStep: React.FC<ImportStepProps> = ({
     index: 1 | 2,
     item: LoadedVideoItem | null,
     isLoadingAudio: boolean,
+    isLoadingMeta: boolean,
     inputRef: React.RefObject<HTMLInputElement | null>
   ) => {
     const chCode = `CH${index}`;
@@ -157,7 +274,7 @@ export const ImportStep: React.FC<ImportStepProps> = ({
         <input
           ref={inputRef}
           type="file"
-          accept="video/*"
+          accept="video/mp4,video/*"
           style={{ display: 'none' }}
           onChange={(e) => handleFileChange(e, index)}
         />
@@ -212,13 +329,27 @@ export const ImportStep: React.FC<ImportStepProps> = ({
               <div>
                 <div className="mono-muted">分辨率</div>
                 <div className="mono-num" style={{ marginTop: '2px', fontWeight: 600 }}>
-                  {item.width}×{item.height}
+                  {isLoadingMeta ? (
+                    <span className="control-group" style={{ gap: '4px', color: 'var(--text-muted)' }}>
+                      <Loader2 size={12} className="spin" />
+                      探测中
+                    </span>
+                  ) : (
+                    `${item.width}×${item.height}`
+                  )}
                 </div>
               </div>
               <div>
                 <div className="mono-muted">时长</div>
                 <div className="mono-num" style={{ marginTop: '2px', fontWeight: 600 }}>
-                  {item.duration.toFixed(2)}s
+                  {isLoadingMeta ? (
+                    <span className="control-group" style={{ gap: '4px', color: 'var(--text-muted)' }}>
+                      <Loader2 size={12} className="spin" />
+                      计算中
+                    </span>
+                  ) : (
+                    `${item.duration.toFixed(2)}s`
+                  )}
                 </div>
               </div>
               <div>
@@ -226,7 +357,7 @@ export const ImportStep: React.FC<ImportStepProps> = ({
                 <div className="mono-num" style={{ marginTop: '2px', fontWeight: 600 }}>
                   {isLoadingAudio ? (
                     <span className="control-group" style={{ gap: '4px', color: 'var(--accent)' }}>
-                      <Loader2 size={12} />
+                      <Loader2 size={12} className="spin" />
                       解析中
                     </span>
                   ) : (
@@ -282,9 +413,23 @@ export const ImportStep: React.FC<ImportStepProps> = ({
 
   return (
     <div className="import-stage">
+      {/* 隐藏的 DOM 挂载容器，用于唤醒移动端老旧内核的媒体加载流水线 */}
+      <div
+        ref={probeHostRef}
+        aria-hidden="true"
+        style={{
+          position: 'absolute',
+          width: 0,
+          height: 0,
+          overflow: 'hidden',
+          opacity: 0,
+          pointerEvents: 'none',
+        }}
+      />
+
       <div className="slot-grid">
-        {renderChannelSlot(1, video1, loadingAudio1, fileInputRef1)}
-        {renderChannelSlot(2, video2, loadingAudio2, fileInputRef2)}
+        {renderChannelSlot(1, video1, loadingAudio1, loadingMeta1, fileInputRef1)}
+        {renderChannelSlot(2, video2, loadingAudio2, loadingMeta2, fileInputRef2)}
       </div>
 
       <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
