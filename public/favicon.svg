@@ -1,0 +1,48 @@
+<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    
+    <filter id="bloomFav" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="24" result="b1"/>
+      <feGaussianBlur stdDeviation="9" in="SourceGraphic" result="b2"/>
+      <feMerge>
+        <feMergeNode in="b1"/>
+        <feMergeNode in="b2"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="trenchBlurFav" x="-35%" y="-35%" width="170%" height="170%">
+      <feGaussianBlur stdDeviation="5"/>
+    </filter>
+    <filter id="castShadowFav" x="-45%" y="-45%" width="190%" height="190%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.92"/>
+      <feDropShadow dx="-3" dy="2" stdDeviation="6" flood-color="#040406" flood-opacity="0.95"/>
+    </filter>
+    <mask id="occludeMaskFav">
+      <rect x="-200" y="-200" width="1424" height="1424" fill="white"/>
+      <path d="M 410 334 L 578 696 L 746 334" fill="none" stroke="black" stroke-opacity="0.96" stroke-width="80" stroke-linecap="round" stroke-linejoin="round" filter="url(#trenchBlurFav)"/>
+    </mask>
+  
+    <radialGradient id="favBg" cx="50%" cy="50%" r="68%">
+      <stop offset="0%" stop-color="#151720"/>
+      <stop offset="62%" stop-color="#0a0b0f"/>
+      <stop offset="100%" stop-color="#050507"/>
+    </radialGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="220" ry="220" fill="url(#favBg)"/>
+  
+    <!-- 下层：电光青 V（穿过上层橙 V 处受柔焦遮挡压暗） -->
+    <g mask="url(#occludeMaskFav)">
+      <path d="M 278 334 L 446 696 L 614 334" fill="none" stroke="#0284c7" stroke-width="76" stroke-linecap="round" stroke-linejoin="round" opacity="0.56" filter="url(#bloomFav)"/>
+      <path d="M 278 334 L 446 696 L 614 334" fill="none" stroke="#0ea5e9" stroke-width="58" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M 278 334 L 446 696 L 614 334" fill="none" stroke="#38bdf8" stroke-width="46" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M 278 334 L 446 696 L 614 334" fill="none" stroke="#e0f2fe" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <!-- 上层：大闪琥珀橙 V（带真实接触投影跨过上方） -->
+    <path d="M 410 334 L 578 696 L 746 334" fill="none" stroke="#ea580c" stroke-width="76" stroke-linecap="round" stroke-linejoin="round" opacity="0.56" filter="url(#bloomFav)"/>
+    <g filter="url(#castShadowFav)">
+      <path d="M 410 334 L 578 696 L 746 334" fill="none" stroke="#d97706" stroke-width="58" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M 410 334 L 578 696 L 746 334" fill="none" stroke="#f59e0b" stroke-width="46" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M 410 334 L 578 696 L 746 334" fill="none" stroke="#fef3c7" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+  
+</svg>
