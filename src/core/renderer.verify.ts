@@ -1,4 +1,4 @@
-import { renderComparisonFrame } from './renderer.ts';
+import { renderComparisonFrame, isCanvasSourceReady } from './renderer.ts';
 import type { ComparisonRenderState } from './renderer.ts';
 
 // 构造 Mock CanvasRenderingContext2D 用于非浏览器环境下的可复现验证
@@ -99,5 +99,49 @@ if (Math.abs((overlayCtx as unknown as MockContext2D).globalAlpha - 0.6) > 1e-4)
 if (!overlayCalls.includes('scale(1.50,1.50)')) {
   throw new Error('叠加模式未正确应用三线缩放变换 scale(1.5, 1.5)');
 }
+
+// 3. 验证 isCanvasSourceReady 视频就绪守卫与异常容灾
+console.log('--- 测试视频 readyState 守卫与异常保护 ---');
+const notReadyVideo = { readyState: 0 } as unknown as CanvasImageSource;
+const metadataOnlyVideo = { readyState: 1 } as unknown as CanvasImageSource;
+const readyVideo = { readyState: 2 } as unknown as CanvasImageSource;
+const fullyReadyVideo = { readyState: 4 } as unknown as CanvasImageSource;
+
+if (isCanvasSourceReady(notReadyVideo, { width: 1920, height: 1080 })) {
+  throw new Error('readyState = 0 应被判定为未就绪');
+}
+if (isCanvasSourceReady(metadataOnlyVideo, { width: 1920, height: 1080 })) {
+  throw new Error('readyState = 1 (HAVE_METADATA) 应被判定为未就绪');
+}
+if (!isCanvasSourceReady(readyVideo, { width: 1920, height: 1080 })) {
+  throw new Error('readyState = 2 (HAVE_CURRENT_DATA) 应被判定为已就绪');
+}
+if (!isCanvasSourceReady(fullyReadyVideo, { width: 1920, height: 1080 })) {
+  throw new Error('readyState = 4 应被判定为已就绪');
+}
+if (isCanvasSourceReady(fullyReadyVideo, { width: 0, height: 1080 })) {
+  throw new Error('尺寸 <= 0 应被判定为未就绪');
+}
+
+// 验证未就绪视频不触发 drawImage
+const unreadyCtx = new MockContext2D() as unknown as CanvasRenderingContext2D;
+const unreadyState: ComparisonRenderState = {
+  ...splitState,
+  video1: notReadyVideo,
+  video2: metadataOnlyVideo,
+};
+renderComparisonFrame(unreadyCtx, unreadyState);
+const unreadyCalls = (unreadyCtx as unknown as MockContext2D).calls;
+if (unreadyCalls.some((c) => c.startsWith('drawImage'))) {
+  throw new Error('未就绪视频不应调用 drawImage 绘制');
+}
+
+// 验证 drawImage 抛出 InvalidStateError 异常时容灾不崩溃
+const throwCtx = new MockContext2D();
+throwCtx.drawImage = () => {
+  throw new Error('InvalidStateError: The HTMLVideoElement is not ready');
+};
+renderComparisonFrame(throwCtx as unknown as CanvasRenderingContext2D, splitState);
+console.log('异常容灾保护有效，未崩溃中断');
 
 console.log('单画布同台渲染器验证全部通过！');

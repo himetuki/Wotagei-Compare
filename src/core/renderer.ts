@@ -39,6 +39,25 @@ export interface ComparisonRenderState {
 }
 
 /**
+ * 检查图像源是否就绪可安全绘制至 Canvas
+ * 针对 HTMLVideoElement 严格要求 readyState >= 2 (HAVE_CURRENT_DATA)，防止抛出 InvalidStateError 或空黑帧
+ */
+export function isCanvasSourceReady(
+  source: CanvasImageSource | null | undefined,
+  size: { width: number; height: number }
+): boolean {
+  if (!source) return false;
+  if (!size || size.width <= 0 || size.height <= 0) return false;
+  // 若包含 readyState 属性（HTMLVideoElement），检查其数据缓冲就绪状态
+  if (typeof (source as HTMLVideoElement).readyState === 'number') {
+    if ((source as HTMLVideoElement).readyState < 2) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
  * 纯函数渲染一帧画面至 Canvas 2D Context
  */
 export function renderComparisonFrame(
@@ -86,7 +105,7 @@ function renderSplitScreen(
   ctx.rect(0, 0, halfWidth, canvasHeight);
   ctx.clip();
 
-  if (state.video1 && state.video1Active && state.video1Size.width > 0) {
+  if (state.video1 && state.video1Active && isCanvasSourceReady(state.video1, state.video1Size)) {
     const calib1 = state.triLine1 || defaultTriLine;
     const fit1 = calculateTriLineSplitScreenPlacement(
       calib1,
@@ -101,31 +120,35 @@ function renderSplitScreen(
       ctx.scale(-1, 1);
     }
 
-    // 若视频原宽度较窄未撑满半屏，底层先以 Cover 铺满柔和背景消除硬黑边
-    if (fit1.targetWidth < halfWidth) {
-      const coverScale = Math.max(halfWidth / state.video1Size.width, canvasHeight / state.video1Size.height);
-      const bgW = state.video1Size.width * coverScale;
-      const bgH = state.video1Size.height * coverScale;
-      const bgX = (halfWidth - bgW) / 2;
-      const bgY = (canvasHeight - bgH) / 2;
-      ctx.save();
-      ctx.globalAlpha = 0.35;
-      ctx.drawImage(state.video1, 0, 0, state.video1Size.width, state.video1Size.height, bgX, bgY, bgW, bgH);
-      ctx.restore();
-    }
+    try {
+      // 若视频原宽度较窄未撑满半屏，底层先以 Cover 铺满柔和背景消除硬黑边
+      if (fit1.targetWidth < halfWidth) {
+        const coverScale = Math.max(halfWidth / state.video1Size.width, canvasHeight / state.video1Size.height);
+        const bgW = state.video1Size.width * coverScale;
+        const bgH = state.video1Size.height * coverScale;
+        const bgX = (halfWidth - bgW) / 2;
+        const bgY = (canvasHeight - bgH) / 2;
+        ctx.save();
+        ctx.globalAlpha = 0.35;
+        ctx.drawImage(state.video1, 0, 0, state.video1Size.width, state.video1Size.height, bgX, bgY, bgW, bgH);
+        ctx.restore();
+      }
 
-    // 绘制整幅视频画面，以三线对齐中轴与地面，上方留出 45%+ 高空容纳挥棒大光弧
-    ctx.drawImage(
-      state.video1,
-      0,
-      0,
-      state.video1Size.width,
-      state.video1Size.height,
-      fit1.dx,
-      fit1.dy,
-      fit1.targetWidth,
-      fit1.targetHeight
-    );
+      // 绘制整幅视频画面，以三线对齐中轴与地面，上方留出 45%+ 高空容纳挥棒大光弧
+      ctx.drawImage(
+        state.video1,
+        0,
+        0,
+        state.video1Size.width,
+        state.video1Size.height,
+        fit1.dx,
+        fit1.dy,
+        fit1.targetWidth,
+        fit1.targetHeight
+      );
+    } catch {
+      // 容灾捕获：单帧绘制异常时不阻断 Canvas 渲染状态机
+    }
     ctx.restore();
   }
   ctx.restore();
@@ -137,7 +160,7 @@ function renderSplitScreen(
   ctx.clip();
   ctx.translate(halfWidth, 0);
 
-  if (state.video2 && state.video2Active && state.video2Size.width > 0) {
+  if (state.video2 && state.video2Active && isCanvasSourceReady(state.video2, state.video2Size)) {
     const calib2 = state.triLine2 || defaultTriLine;
     const fit2 = calculateTriLineSplitScreenPlacement(
       calib2,
@@ -152,31 +175,35 @@ function renderSplitScreen(
       ctx.scale(-1, 1);
     }
 
-    // 若视频原宽度较窄未撑满半屏，底层先以 Cover 铺满柔和背景消除硬黑边
-    if (fit2.targetWidth < halfWidth) {
-      const coverScale = Math.max(halfWidth / state.video2Size.width, canvasHeight / state.video2Size.height);
-      const bgW = state.video2Size.width * coverScale;
-      const bgH = state.video2Size.height * coverScale;
-      const bgX = (halfWidth - bgW) / 2;
-      const bgY = (canvasHeight - bgH) / 2;
-      ctx.save();
-      ctx.globalAlpha = 0.35;
-      ctx.drawImage(state.video2, 0, 0, state.video2Size.width, state.video2Size.height, bgX, bgY, bgW, bgH);
-      ctx.restore();
-    }
+    try {
+      // 若视频原宽度较窄未撑满半屏，底层先以 Cover 铺满柔和背景消除硬黑边
+      if (fit2.targetWidth < halfWidth) {
+        const coverScale = Math.max(halfWidth / state.video2Size.width, canvasHeight / state.video2Size.height);
+        const bgW = state.video2Size.width * coverScale;
+        const bgH = state.video2Size.height * coverScale;
+        const bgX = (halfWidth - bgW) / 2;
+        const bgY = (canvasHeight - bgH) / 2;
+        ctx.save();
+        ctx.globalAlpha = 0.35;
+        ctx.drawImage(state.video2, 0, 0, state.video2Size.width, state.video2Size.height, bgX, bgY, bgW, bgH);
+        ctx.restore();
+      }
 
-    // 绘制整幅视频画面，以三线对齐中轴与地面，上方留出 45%+ 高空容纳挥棒大光弧
-    ctx.drawImage(
-      state.video2,
-      0,
-      0,
-      state.video2Size.width,
-      state.video2Size.height,
-      fit2.dx,
-      fit2.dy,
-      fit2.targetWidth,
-      fit2.targetHeight
-    );
+      // 绘制整幅视频画面，以三线对齐中轴与地面，上方留出 45%+ 高空容纳挥棒大光弧
+      ctx.drawImage(
+        state.video2,
+        0,
+        0,
+        state.video2Size.width,
+        state.video2Size.height,
+        fit2.dx,
+        fit2.dy,
+        fit2.targetWidth,
+        fit2.targetHeight
+      );
+    } catch {
+      // 容灾捕获：单帧绘制异常时不阻断 Canvas 渲染状态机
+    }
     ctx.restore();
   }
   ctx.restore();
@@ -223,13 +250,17 @@ function renderOverlay(
   ctx.scale(fit.scale, fit.scale);
 
   // 1. 绘制底层视频 1
-  if (state.video1 && state.video1Active && state.video1Size.width > 0) {
+  if (state.video1 && state.video1Active && isCanvasSourceReady(state.video1, state.video1Size)) {
     ctx.save();
     if (state.mirror1) {
       ctx.translate(state.video1Size.width, 0);
       ctx.scale(-1, 1);
     }
-    ctx.drawImage(state.video1, 0, 0, state.video1Size.width, state.video1Size.height);
+    try {
+      ctx.drawImage(state.video1, 0, 0, state.video1Size.width, state.video1Size.height);
+    } catch {
+      // 容灾捕获
+    }
     ctx.restore();
   }
 
@@ -240,7 +271,7 @@ function renderOverlay(
   // p = 1 时 alpha = 1.0 (全为视频2)
   const topAlpha = Math.max(0, Math.min(1, (1 + relativeOpacity) / 2));
 
-  if (state.video2 && state.video2Active && state.video2Size.width > 0 && topAlpha > 0) {
+  if (state.video2 && state.video2Active && isCanvasSourceReady(state.video2, state.video2Size) && topAlpha > 0) {
     ctx.save();
     ctx.globalAlpha = topAlpha;
 
@@ -253,7 +284,11 @@ function renderOverlay(
       ctx.scale(-1, 1);
     }
 
-    ctx.drawImage(state.video2, 0, 0, state.video2Size.width, state.video2Size.height);
+    try {
+      ctx.drawImage(state.video2, 0, 0, state.video2Size.width, state.video2Size.height);
+    } catch {
+      // 容灾捕获
+    }
     ctx.restore();
   }
 

@@ -88,6 +88,13 @@ class MockVideoElement {
     list.forEach(h => h());
   }
 
+  public triggerLoadedMetadata(duration: number = 100) {
+    this.readyState = 2;
+    this.duration = duration;
+    const list = [...(this.listeners.get('loadedmetadata') || [])];
+    list.forEach(h => h());
+  }
+
   public play(): Promise<void> {
     this.paused = false;
     return Promise.resolve();
@@ -129,6 +136,37 @@ if (controller.pendingTarget !== null || !controller.isSeeking) {
 console.log('最终稳定 isSeeking:', controller.isSeeking, '期望: false');
 if (controller.isSeeking) {
   throw new Error('最终寻道状态未重置为 false');
+}
+
+// 2.5 验证元数据加载前寻道拦截排队 (readyState < 1 且 duration 为 NaN 时不误裁为 0)
+console.log('--- 测试元数据未加载寻道拦截与就绪唤醒 ---');
+const unreadyMock = new MockVideoElement();
+unreadyMock.readyState = 0;
+unreadyMock.duration = NaN;
+const unreadyController = new SafeVideoController(unreadyMock as unknown as HTMLVideoElement);
+
+unreadyController.seek(25.0);
+console.log('元数据未就绪时 pendingTarget:', unreadyController.pendingTarget, '期望: 25');
+if (unreadyController.pendingTarget !== 25.0) {
+  throw new Error('元数据未就绪时未正确暂存排队目标');
+}
+if (unreadyMock.currentTime !== 0) {
+  throw new Error('元数据未就绪时不应直接设置 currentTime');
+}
+
+// 模拟异步元数据加载完成
+unreadyMock.triggerLoadedMetadata(100);
+console.log('元数据就绪后自动启动寻道 isSeeking:', unreadyController.isSeeking, '期望: true');
+if (!unreadyController.isSeeking) {
+  throw new Error('元数据就绪后未自动恢复寻道');
+}
+if ((unreadyMock.currentTime as number) !== 25.0) {
+  throw new Error(`元数据就绪后 currentTime 应被设为 25.0，实际: ${unreadyMock.currentTime}`);
+}
+unreadyMock.triggerSeeked();
+console.log('寻道完成稳定 isSeeking:', unreadyController.isSeeking, '期望: false');
+if (unreadyController.isSeeking) {
+  throw new Error('元数据就绪寻道完成后状态未重置');
 }
 
 console.log('=== 3. 验证 DualVideoSyncEngine 步进时钟与阻尼跟踪 ===');

@@ -42,6 +42,7 @@ export class SafeVideoController {
   public pendingTarget: number | null = null;
   public taskEpoch: number = 0;
   private seekedHandler: (() => void) | null = null;
+  private metadataHandler: (() => void) | null = null;
 
   constructor(element: HTMLVideoElement | null = null) {
     this.attach(element);
@@ -61,7 +62,11 @@ export class SafeVideoController {
 
   public isReady(): boolean {
     if (!this.element) return true;
-    return !this.isSeeking && !this.element.seeking && this.element.readyState >= 2;
+    return (
+      !this.isSeeking &&
+      !this.element.seeking &&
+      (typeof this.element.readyState !== 'number' || this.element.readyState >= 2)
+    );
   }
 
   /**
@@ -84,7 +89,32 @@ export class SafeVideoController {
     }
 
     this.taskEpoch = epoch;
-    const duration = video.duration || 0;
+
+    // 元数据加载守卫：若视频就绪级别低于 HAVE_METADATA (readyState < 1) 或 duration 为 NaN/未就绪，
+    // 严禁执行 Math.min(duration, targetTime)，否则非零目标会被错误截断为 0 并静默丢弃。
+    // 将目标时间暂存排队，待 loadedmetadata 触发后再执行真正寻道。
+    if (typeof video.readyState === 'number' && video.readyState < 1) {
+      this.pendingTarget = targetTime;
+      if (!this.metadataHandler) {
+        this.metadataHandler = () => {
+          if (this.element && this.metadataHandler) {
+            this.element.removeEventListener('loadedmetadata', this.metadataHandler);
+            this.metadataHandler = null;
+          }
+          if (this.pendingTarget !== null) {
+            const next = this.pendingTarget;
+            this.pendingTarget = null;
+            this.seek(next, onDone, this.taskEpoch);
+          } else {
+            onDone?.();
+          }
+        };
+        video.addEventListener('loadedmetadata', this.metadataHandler, { once: true });
+      }
+      return;
+    }
+
+    const duration = isFinite(video.duration) && video.duration > 0 ? video.duration : targetTime;
     const clamped = Math.max(0, Math.min(duration, targetTime));
 
     if (Math.abs(video.currentTime - clamped) < 0.005) {
@@ -149,6 +179,10 @@ export class SafeVideoController {
     if (this.element && this.seekedHandler) {
       this.element.removeEventListener('seeked', this.seekedHandler);
       this.seekedHandler = null;
+    }
+    if (this.element && this.metadataHandler) {
+      this.element.removeEventListener('loadedmetadata', this.metadataHandler);
+      this.metadataHandler = null;
     }
   }
 

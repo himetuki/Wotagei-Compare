@@ -190,12 +190,26 @@ export const Workbench: React.FC<WorkbenchProps> = ({
     });
   }, [timeline, a1, a2, soundSource, slowMotionRate]);
 
-  // 当视频 ref 挂载更新时同步给引擎
+  const isExportActive = isExportPageOpen || isExport;
+
+  // 当进入导出页时，暂停对比台主引擎与节拍器，避免后台声音与硬件解码冲突
   useEffect(() => {
-    if (videoRef1.current && videoRef2.current) {
-      engineRef.current?.attachVideos(videoRef1.current, videoRef2.current);
+    if (isExportActive) {
+      engineRef.current?.pause();
+      setIsPlaying(false);
+      metronomeRef.current.reset(tauRef.current, timeline.effectiveBpm);
     }
-  }, []);
+  }, [isExportActive, timeline.effectiveBpm]);
+
+  // 当视频 ref 挂载或从导出页切回对比台时，自动同步给引擎并定位至当前 tau
+  useEffect(() => {
+    const v1 = videoRef1.current;
+    const v2 = videoRef2.current;
+    if (!v1 || !v2 || isExportActive) return;
+
+    engineRef.current?.attachVideos(v1, v2);
+    engineRef.current?.seekToTau(tauRef.current);
+  }, [isExportActive, video1.url, video2.url]);
 
   /**
    * 同步定位两路视频至统一时间轴位置
@@ -271,37 +285,43 @@ export const Workbench: React.FC<WorkbenchProps> = ({
     let animId: number;
 
     const renderLoop = () => {
-      const canvas = canvasRef.current;
-      const v1 = videoRef1.current;
-      const v2 = videoRef2.current;
+      if (!isExportActive) {
+        const canvas = canvasRef.current;
+        const v1 = videoRef1.current;
+        const v2 = videoRef2.current;
 
-      if (canvas && v1 && v2) {
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          const currentTau = tauRef.current;
-          const v1Active = isTauInVideoRange(currentTau, timeline.span1);
-          const v2Active = isTauInVideoRange(currentTau, timeline.span2);
+        if (canvas && v1 && v2) {
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            try {
+              const currentTau = tauRef.current;
+              const v1Active = isTauInVideoRange(currentTau, timeline.span1);
+              const v2Active = isTauInVideoRange(currentTau, timeline.span2);
 
-          const renderState: ComparisonRenderState = {
-            mode,
-            video1: v1,
-            video1Size: { width: video1.width, height: video1.height },
-            video1Active: v1Active,
-            mirror1,
-            triLine1: video1.geometry.triLine,
-            video2: v2,
-            video2Size: { width: video2.width, height: video2.height },
-            video2Active: v2Active,
-            mirror2,
-            triLine2: video2.geometry.triLine,
-            triLineTransform,
-            relativeOpacity,
-            viewport,
-            canvasWidth: canvas.width,
-            canvasHeight: canvas.height,
-          };
+              const renderState: ComparisonRenderState = {
+                mode,
+                video1: v1,
+                video1Size: { width: video1.width, height: video1.height },
+                video1Active: v1Active,
+                mirror1,
+                triLine1: video1.geometry.triLine,
+                video2: v2,
+                video2Size: { width: video2.width, height: video2.height },
+                video2Active: v2Active,
+                mirror2,
+                triLine2: video2.geometry.triLine,
+                triLineTransform,
+                relativeOpacity,
+                viewport,
+                canvasWidth: canvas.width,
+                canvasHeight: canvas.height,
+              };
 
-          renderComparisonFrame(ctx, renderState);
+              renderComparisonFrame(ctx, renderState);
+            } catch {
+              // 容灾捕获：任何渲染帧瞬时异常绝不中断 RAF 主循环
+            }
+          }
         }
       }
 
@@ -311,6 +331,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
     animId = requestAnimationFrame(renderLoop);
     return () => cancelAnimationFrame(animId);
   }, [
+    isExportActive,
     mode,
     mirror1,
     mirror2,
@@ -370,33 +391,6 @@ export const Workbench: React.FC<WorkbenchProps> = ({
     }
   };
 
-  // 打开精简独立导出页
-  if (isExportPageOpen || isExport) {
-    return (
-      <ExportPage
-        video1={video1}
-        video2={video2}
-        timeline={timeline}
-        initialMode={mode}
-        initialMirror1={mirror1}
-        initialMirror2={mirror2}
-        triLineTransform={triLineTransform}
-        initialViewport={viewport}
-        initialOpacity={relativeOpacity}
-        initialRate={slowMotionRate}
-        initialSoundSource={soundSource}
-        currentPlayTau={tau}
-        onBack={() => {
-          if (onNavigate) {
-            onNavigate('workbench');
-          } else {
-            setIsExportPageOpen(false);
-          }
-        }}
-      />
-    );
-  }
-
   const isViewportModified =
     mode === 'overlay' &&
     (viewport.scale !== 1 || viewport.offsetX !== 0 || viewport.offsetY !== 0);
@@ -408,14 +402,25 @@ export const Workbench: React.FC<WorkbenchProps> = ({
         display: 'flex',
         flexDirection: 'column',
         minHeight: 0,
+        position: 'relative',
         backgroundColor: 'var(--bg-canvas)',
       }}
     >
-      {/* 隐藏视频解码源 */}
-      <video ref={videoRef1} src={video1.url} style={{ display: 'none' }} playsInline preload="auto" />
-      <video ref={videoRef2} src={video2.url} style={{ display: 'none' }} playsInline preload="auto" />
+      {/* 隐藏视频解码源与对比台视图：当处于导出页时隐藏并暂停，但保持 DOM 节点与视频句柄存活 */}
+      <div
+        style={{
+          flex: 1,
+          display: isExportActive ? 'none' : 'flex',
+          flexDirection: 'column',
+          minHeight: 0,
+          backgroundColor: 'var(--bg-canvas)',
+        }}
+      >
+        {/* 隐藏视频解码源 */}
+        <video ref={videoRef1} src={video1.url} style={{ display: 'none' }} playsInline preload="auto" />
+        <video ref={videoRef2} src={video2.url} style={{ display: 'none' }} playsInline preload="auto" />
 
-      {/* 顶部工作台参数栏（可折叠，默认收起） */}
+        {/* 顶部工作台参数栏（可折叠，默认收起） */}
       {isToolbarExpanded && (
         <div className="toolbar-row">
           {/* 左：对比模式切换与视口复位（分区在前、叠加在后） */}
@@ -756,6 +761,32 @@ export const Workbench: React.FC<WorkbenchProps> = ({
           </div>
         </div>
       </div>
+      </div>
+
+      {/* 独立导出片段视图：与对比台同级并存，导出激活时浮层展示 */}
+      {isExportActive && (
+        <ExportPage
+          video1={video1}
+          video2={video2}
+          timeline={timeline}
+          initialMode={mode}
+          initialMirror1={mirror1}
+          initialMirror2={mirror2}
+          triLineTransform={triLineTransform}
+          initialViewport={viewport}
+          initialOpacity={relativeOpacity}
+          initialRate={slowMotionRate}
+          initialSoundSource={soundSource}
+          currentPlayTau={tau}
+          onBack={() => {
+            if (onNavigate) {
+              onNavigate('workbench');
+            } else {
+              setIsExportPageOpen(false);
+            }
+          }}
+        />
+      )}
     </div>
   );
 };
