@@ -60,28 +60,44 @@ if (Math.abs(resV.scale - 3.0) > 1e-4) {
 }
 
 // 3. 验证左右分区半区三线投影适配
-const splitFit = calculateTriLineSplitScreenPlacement(
+const splitFitLeft = calculateTriLineSplitScreenPlacement(
   calib1,
   { width: 1920, height: 1080 },
-  { width: 960, height: 1080 }
+  { width: 960, height: 1080 },
+  'left'
+);
+const splitFitRight = calculateTriLineSplitScreenPlacement(
+  calib1,
+  { width: 1920, height: 1080 },
+  { width: 960, height: 1080 },
+  'right'
 );
 console.log('--- 测试左右分区半区三线投影适配 ---');
-console.log('Split fit result:', splitFit);
-if (splitFit.targetWidth <= 0 || splitFit.targetHeight <= 0) {
+console.log('Split fit left result:', splitFitLeft);
+console.log('Split fit right result:', splitFitRight);
+if (splitFitLeft.targetWidth <= 0 || splitFitLeft.targetHeight <= 0) {
   throw new Error('左右分区三线适配计算不符合预期');
 }
 // calib1.twoHOneV: yA=0.2, yB=0.8, featureDist = (0.8-0.2)*1080 = 648
-// targetFeatureH = 1080 * 0.69 = 745.2, scale = 745.2 / 648 = 1.15
+// targetFeatureH = 1080 * 0.655 = 707.4, scale = 707.4 / 648 = 1.0916666...
 // targetBottomY = 1080 * 0.95 = 1026, bottomY = 0.8 * 1080 = 864
-// dy = 1026 - 864 * 1.15 = 1026 - 993.6 = 32.4
 // 投射后脚底位置: dy + bottomY * scale = 1026 (即 1026 / 1080 = 95%)
-// 投射后头顶位置: dy + 0.2 * 1080 * 1.15 = 32.4 + 248.4 = 280.8 (即 280.8 / 1080 = 26%)
-const renderedBottomY = splitFit.dy + 0.8 * 1080 * splitFit.scale;
-const renderedTopY = splitFit.dy + 0.2 * 1080 * splitFit.scale;
+// 投射后头顶位置: dy + 0.2 * 1080 * scale = 1026 - 707.4 = 318.6 (即 318.6 / 1080 = 29.5%)
+const renderedBottomY = splitFitLeft.dy + 0.8 * 1080 * splitFitLeft.scale;
+const renderedTopY = splitFitLeft.dy + 0.2 * 1080 * splitFitLeft.scale;
+const renderedAxisXLeft = splitFitLeft.dx + 0.5 * 1920 * splitFitLeft.scale;
+const renderedAxisXRight = splitFitRight.dx + 0.5 * 1920 * splitFitRight.scale;
+
 console.log('投射后头顶 Y:', renderedTopY, `占比: ${(renderedTopY / 1080 * 100).toFixed(1)}%`);
 console.log('投射后脚底 Y:', renderedBottomY, `占比: ${(renderedBottomY / 1080 * 100).toFixed(1)}%`);
-if (Math.abs(renderedBottomY / 1080 - 0.95) > 1e-4 || Math.abs(renderedTopY / 1080 - 0.26) > 1e-4) {
+console.log('左半区中轴 X:', renderedAxisXLeft, `占比: ${(renderedAxisXLeft / 960 * 100).toFixed(1)}%`);
+console.log('右半区中轴 X:', renderedAxisXRight, `占比: ${(renderedAxisXRight / 960 * 100).toFixed(1)}%`);
+
+if (Math.abs(renderedBottomY / 1080 - 0.95) > 1e-4 || Math.abs(renderedTopY / 1080 - 0.295) > 1e-4) {
   throw new Error('左右分区头脚沉底与特征高度比例计算偏差');
+}
+if (Math.abs(renderedAxisXLeft / 960 - 0.475) > 1e-4 || Math.abs(renderedAxisXRight / 960 - 0.525) > 1e-4) {
+  throw new Error('左右半区中轴外偏比例计算偏差');
 }
 
 // 4. 验证并集居中视口适配

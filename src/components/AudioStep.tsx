@@ -70,9 +70,10 @@ export const AudioStep: React.FC<AudioStepProps> = ({
     const audio = videoItem.audioInfo;
     const dur = videoItem.duration > 0 ? videoItem.duration : audio?.duration || 1;
     const nextBpm = audio?.userBpm || 160;
-    const nextAnchor = typeof audio?.anchorTime === 'number' ? audio.anchorTime : 1.0;
     const nextTrimStart = audio?.trimRange?.start ?? 0;
     const nextTrimEnd = audio?.trimRange?.end ?? dur;
+    const rawAnchor = typeof audio?.anchorTime === 'number' ? audio.anchorTime : 1.0;
+    const nextAnchor = Math.max(nextTrimStart, Math.min(nextTrimEnd, rawAnchor));
 
     setBpm(nextBpm);
     setAnchorTime(nextAnchor);
@@ -88,6 +89,7 @@ export const AudioStep: React.FC<AudioStepProps> = ({
 
   /**
    * 实时将当前音频与时间截取参数写回父级状态
+   * 锚点强制 Clamp 在有效截取区间 [trimStart, trimEnd] 内部
    */
   const commitAudioState = (
     nextBpm: number,
@@ -95,9 +97,11 @@ export const AudioStep: React.FC<AudioStepProps> = ({
     nextTrim?: TimeInterval
   ) => {
     const activeTrim = nextTrim || { start: trimStart, end: trimEnd };
+    const clampedAnchor = Math.max(activeTrim.start, Math.min(activeTrim.end, nextAnchor));
+
     setBpm(nextBpm);
-    setAnchorTime(nextAnchor);
-    setAnchorInputText(nextAnchor.toFixed(3));
+    setAnchorTime(clampedAnchor);
+    setAnchorInputText(clampedAnchor.toFixed(3));
     if (nextTrim) {
       setTrimStart(nextTrim.start);
       setTrimEnd(nextTrim.end);
@@ -106,7 +110,7 @@ export const AudioStep: React.FC<AudioStepProps> = ({
       ...initialAudio,
       duration: totalDuration,
       userBpm: nextBpm,
-      anchorTime: nextAnchor,
+      anchorTime: clampedAnchor,
       trimRange: activeTrim,
       rawChannelData: videoItem.audioInfo?.rawChannelData,
     });
@@ -114,7 +118,7 @@ export const AudioStep: React.FC<AudioStepProps> = ({
 
   /**
    * 拖拽手柄时根据当前有效截取区间重新计算 BPM
-   * 锚点时间戳与绝对位置严格维持不变
+   * 锚点时间戳自动 Clamp 至有效截取区间 [tStart, tEnd] 内部
    */
   const recalculateBpmForTrim = (tStart: number, tEnd: number) => {
     const pcm = videoItem.audioInfo?.rawChannelData;
@@ -126,22 +130,28 @@ export const AudioStep: React.FC<AudioStepProps> = ({
         computedBpm = detected;
       }
     }
-    commitAudioState(computedBpm, anchorTime, { start: tStart, end: tEnd });
+    const clampedAnchor = Math.max(tStart, Math.min(tEnd, anchorTime));
+    commitAudioState(computedBpm, clampedAnchor, { start: tStart, end: tEnd });
   };
 
-  // 60fps 平滑更新当前播放时间游标
+  // 60fps 平滑更新当前播放时间游标，并在到达截取终点时自动回绕至起点循环播放
   useEffect(() => {
     let animId: number;
     const updateLoop = () => {
       const video = videoRef.current;
       if (video && !video.paused) {
-        setCurrentTime(video.currentTime);
+        if (video.currentTime >= trimEnd) {
+          video.currentTime = trimStart;
+          setCurrentTime(trimStart);
+        } else {
+          setCurrentTime(video.currentTime);
+        }
       }
       animId = requestAnimationFrame(updateLoop);
     };
     animId = requestAnimationFrame(updateLoop);
     return () => cancelAnimationFrame(animId);
-  }, []);
+  }, [trimStart, trimEnd]);
 
   // 绘制波形、节拍刻度、对拍锚点线与实时播放游标
   useEffect(() => {
@@ -259,7 +269,7 @@ export const AudioStep: React.FC<AudioStepProps> = ({
   };
 
   /**
-   * 播放/暂停预览
+   * 播放/暂停预览（严格在 [trimStart, trimEnd] 截取区间闭环循环播放）
    */
   const togglePlay = () => {
     const video = videoRef.current;
@@ -270,18 +280,23 @@ export const AudioStep: React.FC<AudioStepProps> = ({
       video.pause();
       setIsPlaying(false);
     } else {
+      if (video.currentTime < trimStart || video.currentTime >= trimEnd - 0.05) {
+        video.currentTime = trimStart;
+        setCurrentTime(trimStart);
+      }
       video.play().catch(() => {});
       setIsPlaying(true);
     }
   };
 
   /**
-   * 将当前播放位置设为对拍锚点
+   * 将当前播放位置设为对拍锚点（强制 Clamp 在 [trimStart, trimEnd] 内）
    */
   const setAsAnchor = () => {
     const video = videoRef.current;
     const t = video ? video.currentTime : currentTime;
-    commitAudioState(bpm, t);
+    const clamped = Math.max(trimStart, Math.min(trimEnd, t));
+    commitAudioState(bpm, clamped);
   };
 
   /**
@@ -341,6 +356,13 @@ export const AudioStep: React.FC<AudioStepProps> = ({
     e.preventDefault();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     setDraggingHandle(handle);
+
+    // 拖动开始时若正在播放，立即自动停止播放
+    const video = videoRef.current;
+    if (video && !video.paused) {
+      video.pause();
+      setIsPlaying(false);
+    }
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
@@ -348,14 +370,23 @@ export const AudioStep: React.FC<AudioStepProps> = ({
     const rect = waveformContainerRef.current.getBoundingClientRect();
     const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     const targetTime = ratio * totalDuration;
+    const video = videoRef.current;
 
     if (draggingHandle === 'start') {
       const newStart = Math.max(0, Math.min(trimEnd - 0.5, targetTime));
       setTrimStart(newStart);
+      if (video) {
+        video.currentTime = newStart;
+      }
+      setCurrentTime(newStart);
       recalculateBpmForTrim(newStart, trimEnd);
     } else if (draggingHandle === 'end') {
       const newEnd = Math.min(totalDuration, Math.max(trimStart + 0.5, targetTime));
       setTrimEnd(newEnd);
+      if (video) {
+        video.currentTime = newEnd;
+      }
+      setCurrentTime(newEnd);
       recalculateBpmForTrim(trimStart, newEnd);
     }
   };
@@ -610,14 +641,14 @@ export const AudioStep: React.FC<AudioStepProps> = ({
                 onChange={(e) => {
                   setAnchorInputText(e.target.value);
                   const parsed = parseFloat(e.target.value);
-                  if (!isNaN(parsed) && parsed >= 0 && parsed <= totalDuration) {
+                  if (!isNaN(parsed) && parsed >= trimStart && parsed <= trimEnd) {
                     commitAudioState(bpm, parsed);
                   }
                 }}
                 onBlur={() => {
                   const parsed = parseFloat(anchorInputText);
                   if (!isNaN(parsed)) {
-                    const clamped = Math.max(0, Math.min(totalDuration, parsed));
+                    const clamped = Math.max(trimStart, Math.min(trimEnd, parsed));
                     setAnchorInputText(clamped.toFixed(3));
                     commitAudioState(bpm, clamped);
                   } else {

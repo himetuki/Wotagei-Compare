@@ -156,15 +156,16 @@ export function calculateFitTransform(
  * 左右分区模式下的单视频三线正交投影算法
  * 规则：
  * 1. 提取三线特征尺寸（两横线高度差或两竖线跨度）与基准中轴线、底部脚跟基准线
- * 2. 将特征高度缩放至半区理想尺度（约占半区高度 42%，留出 45%+ 的高空容纳挥棒大光弧）
- * 3. 身体中轴线严格水平对齐至半区中央轴线（x = halfWidth / 2）
- * 4. 脚跟地面线严格垂直沉底对齐（y = halfHeight * 0.85）
+ * 2. 将特征高度缩放至半区理想尺度（约占半区高度 65.5%，上方预留 29.5% 容纳大幅度挥棒高空光弧）
+ * 3. 身体中轴线向外侧微幅偏移（左半区对齐至 47.5%，右半区对齐至 52.5%），为中央分界线留出挥棒光弧空间
+ * 4. 脚跟地面线严格垂直沉底对齐（y = halfHeight * 0.95）
  * 5. 整幅原视频无裁切铺展在半区中，超出半区由视口剪裁
  */
 export function calculateTriLineSplitScreenPlacement(
   calib: TriLineCalibration,
   videoSize: { width: number; height: number },
-  halfViewport: { width: number; height: number }
+  halfViewport: { width: number; height: number },
+  channel: 'left' | 'right' = 'left'
 ): TriLineHalfScreenPlacement {
   let featureDist = 1;
   let axisX = 0.5 * videoSize.width;
@@ -182,12 +183,12 @@ export function calculateTriLineSplitScreenPlacement(
     bottomY = v.y0 * videoSize.height;
   }
 
-  // 目标特征尺寸：在半区高度中占 69%，显著放大人物主体以清晰对比细节，脚底沉在 95%，上方预留 26% 容纳挥棒大光弧
-  const targetFeatureH = halfViewport.height * 0.69;
+  // 目标特征尺寸：在半区高度中占 65.5%，显著放大人物主体同时上方预留 29.5% 容纳大幅度高空大光弧
+  const targetFeatureH = halfViewport.height * 0.655;
   const scale = targetFeatureH / featureDist;
 
-  // 目标半区对齐位置：中轴居中，脚底沉在 95%
-  const targetCenterX = halfViewport.width * 0.5;
+  // 目标半区对齐位置：左半区中轴向外微移至 47.5%，右半区中轴向外微移至 52.5%，脚底沉在 95%
+  const targetCenterX = halfViewport.width * (channel === 'left' ? 0.475 : 0.525);
   const targetBottomY = halfViewport.height * 0.95;
 
   const dx = targetCenterX - axisX * scale;

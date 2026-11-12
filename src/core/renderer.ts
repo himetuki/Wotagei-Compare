@@ -91,7 +91,8 @@ function renderSplitScreen(
     const fit1 = calculateTriLineSplitScreenPlacement(
       calib1,
       state.video1Size,
-      { width: halfWidth, height: canvasHeight }
+      { width: halfWidth, height: canvasHeight },
+      'left'
     );
 
     ctx.save();
@@ -141,7 +142,8 @@ function renderSplitScreen(
     const fit2 = calculateTriLineSplitScreenPlacement(
       calib2,
       state.video2Size,
-      { width: halfWidth, height: canvasHeight }
+      { width: halfWidth, height: canvasHeight },
+      'right'
     );
 
     ctx.save();
