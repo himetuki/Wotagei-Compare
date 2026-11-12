@@ -53,6 +53,21 @@ export const AudioStep: React.FC<AudioStepProps> = ({
   );
   const [draggingHandle, setDraggingHandle] = useState<'start' | 'end' | null>(null);
 
+  const trimStartRef = useRef<number>(trimStart);
+  const trimEndRef = useRef<number>(trimEnd);
+  const debounceBpmTimerRef = useRef<number | null>(null);
+
+  trimStartRef.current = trimStart;
+  trimEndRef.current = trimEnd;
+
+  useEffect(() => {
+    return () => {
+      if (debounceBpmTimerRef.current) {
+        window.clearTimeout(debounceBpmTimerRef.current);
+      }
+    };
+  }, []);
+
   const [bpm, setBpm] = useState<number>(initialAudio.userBpm || 160);
   const [anchorTime, setAnchorTime] = useState<number>(
     typeof initialAudio.anchorTime === 'number' ? initialAudio.anchorTime : 1.0
@@ -117,7 +132,7 @@ export const AudioStep: React.FC<AudioStepProps> = ({
   };
 
   /**
-   * 拖拽手柄时根据当前有效截取区间重新计算 BPM
+   * 拖拽手柄稳定后根据当前有效截取区间重新计算 BPM
    * 锚点时间戳自动 Clamp 至有效截取区间 [tStart, tEnd] 内部
    */
   const recalculateBpmForTrim = (tStart: number, tEnd: number) => {
@@ -125,7 +140,7 @@ export const AudioStep: React.FC<AudioStepProps> = ({
     const sampleRate = videoItem.audioInfo?.sampleRate || 44100;
     let computedBpm = bpm;
     if (pcm && pcm.length > 0 && sampleRate > 0) {
-      const detected = detectBpmFromSlice(pcm, sampleRate, tStart, tEnd);
+      const detected = detectBpmFromSlice(pcm, sampleRate, tStart, tEnd, bpm);
       if (detected > 0) {
         computedBpm = detected;
       }
@@ -372,23 +387,38 @@ export const AudioStep: React.FC<AudioStepProps> = ({
     const targetTime = ratio * totalDuration;
     const video = videoRef.current;
 
+    let nextStart = trimStartRef.current;
+    let nextEnd = trimEndRef.current;
+
     if (draggingHandle === 'start') {
-      const newStart = Math.max(0, Math.min(trimEnd - 0.5, targetTime));
-      setTrimStart(newStart);
+      nextStart = Math.max(0, Math.min(trimEndRef.current - 0.5, targetTime));
+      setTrimStart(nextStart);
+      trimStartRef.current = nextStart;
       if (video) {
-        video.currentTime = newStart;
+        video.currentTime = nextStart;
       }
-      setCurrentTime(newStart);
-      recalculateBpmForTrim(newStart, trimEnd);
+      setCurrentTime(nextStart);
     } else if (draggingHandle === 'end') {
-      const newEnd = Math.min(totalDuration, Math.max(trimStart + 0.5, targetTime));
-      setTrimEnd(newEnd);
+      nextEnd = Math.min(totalDuration, Math.max(trimStartRef.current + 0.5, targetTime));
+      setTrimEnd(nextEnd);
+      trimEndRef.current = nextEnd;
       if (video) {
-        video.currentTime = newEnd;
+        video.currentTime = nextEnd;
       }
-      setCurrentTime(newEnd);
-      recalculateBpmForTrim(trimStart, newEnd);
+      setCurrentTime(nextEnd);
     }
+
+    // 拖动过程中平滑同步时间截取范围至父级，但保持当前 BPM，不进行重度自相关计算
+    const clampedAnchor = Math.max(nextStart, Math.min(nextEnd, anchorTime));
+    commitAudioState(bpm, clampedAnchor, { start: nextStart, end: nextEnd });
+
+    // 设置 200ms 防抖重算保底
+    if (debounceBpmTimerRef.current) {
+      window.clearTimeout(debounceBpmTimerRef.current);
+    }
+    debounceBpmTimerRef.current = window.setTimeout(() => {
+      recalculateBpmForTrim(trimStartRef.current, trimEndRef.current);
+    }, 200);
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
@@ -397,6 +427,13 @@ export const AudioStep: React.FC<AudioStepProps> = ({
         (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
       } catch {}
       setDraggingHandle(null);
+
+      // 手柄释放时清除防抖计时器并立即触发一次确定的局部 BPM 重新推算
+      if (debounceBpmTimerRef.current) {
+        window.clearTimeout(debounceBpmTimerRef.current);
+        debounceBpmTimerRef.current = null;
+      }
+      recalculateBpmForTrim(trimStartRef.current, trimEndRef.current);
     }
   };
 

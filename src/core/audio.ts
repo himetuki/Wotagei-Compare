@@ -37,15 +37,29 @@ export function extractAudioWaveform(
 }
 
 /**
- * 基于能量包络与差分自相关算法自动测算音轨 BPM
- * 适用于流行乐、电子乐与动漫歌曲 (WOTA 艺常用 100 ~ 220 BPM)
+ * 基于 WOTA 艺常用节拍速度 (150 ~ 190 BPM) 的对数正态先验加权函数
+ * 中心设在 168 BPM，标准差 sigma = 0.35
+ */
+export function calculateTempoPriorWeight(bpm: number): number {
+  if (bpm <= 0) return 0;
+  const centerBpm = 168;
+  const sigma = 0.35;
+  const logRatio = Math.log2(bpm / centerBpm);
+  return Math.exp(-(logRatio * logRatio) / (2 * sigma * sigma));
+}
+
+/**
+ * 基于能量包络、先验衰减加权与谐波共振校验自动测算音轨 BPM
+ * 适用于流行乐、电子乐与动漫歌曲 (WOTA 艺常用 120 ~ 220 BPM)
  * @param channelData 单声道 Float32 PCM 数据
  * @param sampleRate 采样率 (如 44100 或 48000)
+ * @param maxScanSeconds 最大分析时长（秒，默认无限制；导入超长大音频时建议传 60）
  * @returns 测算出的整数 BPM
  */
 export function detectBpmFromPcm(
   channelData: Float32Array,
-  sampleRate: number
+  sampleRate: number,
+  maxScanSeconds?: number
 ): number {
   if (channelData.length < sampleRate) {
     // 音频过短不足 1 秒，返回默认典型 160 BPM
@@ -74,7 +88,7 @@ export function detectBpmFromPcm(
     onsets[i] = diff > 0 ? diff : 0;
   }
 
-  // 3. 在 80 ~ 220 BPM 范围内进行自相关搜索
+  // 3. 在 80 ~ 220 BPM 范围内进行自相关搜索与先验加权
   const envelopeSampleRate = sampleRate / hopSize;
   const minBpm = 80;
   const maxBpm = 220;
@@ -82,11 +96,17 @@ export function detectBpmFromPcm(
   const minLag = Math.floor((60 * envelopeSampleRate) / maxBpm);
   const maxLag = Math.ceil((60 * envelopeSampleRate) / minBpm);
 
-  let bestLag = minLag;
-  let maxCorrelation = -1;
+  // 扫描窗口：未传入 maxScanSeconds 时，严格使用切片的全部可用起音数据，消除盲区截断
+  const scanLimit =
+    typeof maxScanSeconds === 'number' && maxScanSeconds > 0
+      ? Math.floor(maxScanSeconds * envelopeSampleRate)
+      : onsets.length;
+  const maxScanLength = Math.min(onsets.length, scanLimit);
 
-  // 仅截取前 45 秒内的数据进行快速自相关分析，兼顾速度与准确度
-  const maxScanLength = Math.min(onsets.length, Math.floor(45 * envelopeSampleRate));
+  // 记录每个 lag 的原始自相关系数，便于后续谐波共振复核
+  const rawCorrelations = new Float32Array(maxLag + 1);
+  let bestLag = minLag;
+  let maxScore = -1;
 
   for (let lag = minLag; lag <= maxLag; lag++) {
     let sum = 0;
@@ -97,9 +117,15 @@ export function detectBpmFromPcm(
       sum += onsets[i] * onsets[i + lag];
     }
 
-    const correlation = sum / count;
-    if (correlation > maxCorrelation) {
-      maxCorrelation = correlation;
+    const corr = sum / count;
+    rawCorrelations[lag] = corr;
+
+    const bpmAtLag = (60 * envelopeSampleRate) / lag;
+    const weight = calculateTempoPriorWeight(bpmAtLag);
+    const score = corr * weight;
+
+    if (score > maxScore) {
+      maxScore = score;
       bestLag = lag;
     }
   }
@@ -108,7 +134,28 @@ export function detectBpmFromPcm(
 
   let calculatedBpm = (60 * envelopeSampleRate) / bestLag;
 
-  // 4. 谐波折叠校准：若估算落入 < 100 偏慢区间，检查是否存在强双倍频
+  // 4. 谐波共振校验 (Harmonic Folding & Rescoring)
+  // 4.1 若命中 95 ~ 125 BPM (常见为 110 等 1.5 拍亚谐波)，探测其 1.5 倍频 (如 165 BPM)
+  if (calculatedBpm >= 95 && calculatedBpm <= 125) {
+    const target15xLag = Math.round(bestLag / 1.5);
+    if (target15xLag >= minLag && target15xLag <= maxLag) {
+      // 在 1.5 倍频邻域找局部极大值
+      let localMaxCorr = 0;
+      let localBestLag = target15xLag;
+      for (let l = Math.max(minLag, target15xLag - 1); l <= Math.min(maxLag, target15xLag + 1); l++) {
+        if (rawCorrelations[l] > localMaxCorr) {
+          localMaxCorr = rawCorrelations[l];
+          localBestLag = l;
+        }
+      }
+      // 只要 1.5x 处的原始自相关达到慢速峰的 30% 以上，认定真实节拍为 1.5x 高速拍
+      if (localMaxCorr > 0 && localMaxCorr >= rawCorrelations[bestLag] * 0.3) {
+        calculatedBpm = (60 * envelopeSampleRate) / localBestLag;
+      }
+    }
+  }
+
+  // 4.2 若估算落入 < 100 偏慢区间，检查是否存在强双倍频
   if (calculatedBpm < 100) {
     calculatedBpm *= 2;
   } else if (calculatedBpm > 220) {
@@ -124,14 +171,16 @@ export function detectBpmFromPcm(
  * @param sampleRate 采样率 (Hz)
  * @param startSec 起始时间戳 (秒)
  * @param endSec 结束时间戳 (秒)
+ * @param fallbackBpm 切片过短（< 2.0s）时的保底/当前 BPM（默认 160）
  */
 export function detectBpmFromSlice(
   pcm: Float32Array,
   sampleRate: number,
   startSec: number,
-  endSec: number
+  endSec: number,
+  fallbackBpm = 160
 ): number {
-  if (!pcm || pcm.length === 0 || sampleRate <= 0) return 160;
+  if (!pcm || pcm.length === 0 || sampleRate <= 0) return fallbackBpm;
 
   const validStart = Math.max(0, Math.min(startSec, endSec));
   const validEnd = Math.max(startSec, endSec);
@@ -139,12 +188,13 @@ export function detectBpmFromSlice(
   const startSample = Math.max(0, Math.floor(validStart * sampleRate));
   const endSample = Math.min(pcm.length, Math.ceil(validEnd * sampleRate));
 
-  // 截取区间不足 1.5 秒时返回全量测算结果
-  if (endSample - startSample < sampleRate * 1.5) {
-    return detectBpmFromPcm(pcm, sampleRate);
+  // 截取区间不足 2.0 秒时返回 fallbackBpm，避免虚假推断
+  if (endSample - startSample < sampleRate * 2.0) {
+    return fallbackBpm;
   }
 
   const slice = pcm.subarray(startSample, endSample);
+  // 切片计算严格闭环在区间内部，不设向后截断限制
   return detectBpmFromPcm(slice, sampleRate);
 }
 
@@ -181,7 +231,8 @@ export async function decodeAudioFromFile(file: File): Promise<{
     }
   }
 
-  const detectedBpm = detectBpmFromPcm(monoData, sampleRate);
+  // 初次导入默认对前 60 秒音频进行先验自相关分析，兼顾整曲速度与加载流畅度
+  const detectedBpm = detectBpmFromPcm(monoData, sampleRate, 60);
   const waveform = extractAudioWaveform(monoData, 1000);
 
   await audioCtx.close();
