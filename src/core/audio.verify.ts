@@ -84,4 +84,36 @@ if (Math.abs(detectedSyncBpm - 165) > 3) {
   throw new Error(`切分音抗干扰失败: 期望 165 附近，实际被误判为 ${detectedSyncBpm}`);
 }
 
+// 模拟测试：188 BPM 音频切片起始点微调防跳变测试 (48000Hz)
+console.log('--- 测试 188 BPM 切片起始点连续微调防跳变与抛物线拟合 ---');
+const testSr = 48000;
+const testDuration = 25;
+const testSamples = testSr * testDuration;
+const testPcm = new Float32Array(testSamples);
+const trueBpm = 188;
+const beatInterval = 60 / trueBpm;
+
+for (let b = 0; b * beatInterval < testDuration; b++) {
+  const hitTime = b * beatInterval;
+  const startIdx = Math.round(hitTime * testSr);
+  const pulseLen = Math.round(0.04 * testSr);
+  for (let i = 0; i < pulseLen && startIdx + i < testSamples; i++) {
+    const t = i / testSr;
+    const decay = Math.exp(-t * 50);
+    const sine = Math.sin(2 * Math.PI * 150 * t);
+    testPcm[startIdx + i] += sine * decay * 0.9;
+  }
+}
+
+// 保持停止点 18.98s，起始点在 6.00s ~ 6.45s 之间以 0.03s 步长持续微移
+const stopSec = 18.98;
+const startPoints = [6.00, 6.03, 6.06, 6.09, 6.12, 6.15, 6.18, 6.21, 6.24, 6.27, 6.30, 6.33, 6.36, 6.37, 6.40, 6.45];
+for (const s of startPoints) {
+  const bpmResult = detectBpmFromSlice(testPcm, testSr, s, stopSec);
+  if (bpmResult !== 188) {
+    throw new Error(`起始点 ${s.toFixed(2)}s 时 BPM 发生跳变: 期望 188, 实际为 ${bpmResult}`);
+  }
+}
+console.log(`188 BPM 合成音频在 16 个微移起始点下测试全部通过，稳定输出 188 BPM！`);
+
 console.log('音频 BPM 检测算法验证通过！');

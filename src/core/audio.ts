@@ -132,11 +132,12 @@ export function detectBpmFromPcm(
 
   if (bestLag <= 0) return 160;
 
-  let calculatedBpm = (60 * envelopeSampleRate) / bestLag;
+  let chosenLag = bestLag;
 
   // 4. 谐波共振校验 (Harmonic Folding & Rescoring)
   // 4.1 若命中 95 ~ 125 BPM (常见为 110 等 1.5 拍亚谐波)，探测其 1.5 倍频 (如 165 BPM)
-  if (calculatedBpm >= 95 && calculatedBpm <= 125) {
+  const initialBpmAtBestLag = (60 * envelopeSampleRate) / bestLag;
+  if (initialBpmAtBestLag >= 95 && initialBpmAtBestLag <= 125) {
     const target15xLag = Math.round(bestLag / 1.5);
     if (target15xLag >= minLag && target15xLag <= maxLag) {
       // 在 1.5 倍频邻域找局部极大值
@@ -150,12 +151,31 @@ export function detectBpmFromPcm(
       }
       // 只要 1.5x 处的原始自相关达到慢速峰的 30% 以上，认定真实节拍为 1.5x 高速拍
       if (localMaxCorr > 0 && localMaxCorr >= rawCorrelations[bestLag] * 0.3) {
-        calculatedBpm = (60 * envelopeSampleRate) / localBestLag;
+        chosenLag = localBestLag;
       }
     }
   }
 
-  // 4.2 若估算落入 < 100 偏慢区间，检查是否存在强双倍频
+  // 5. 局部未加权物理自相关峰值的二次抛物线插值 (Sub-sample Parabolic Peak Interpolation)
+  // 利用最佳整数点与其前后两邻居相关系数，拟合光滑连续曲线极值，将时间分辨率提升至连续亚采样级
+  // 消除 6~7 BPM 的离散量化粗糙阶跃，且在原始物理系数上拟合可规避先验单调递减坡度对极值的负向偏置拉偏
+  let refinedLag = chosenLag;
+  if (chosenLag > minLag && chosenLag < maxLag) {
+    const y0 = rawCorrelations[chosenLag - 1];
+    const y1 = rawCorrelations[chosenLag];
+    const y2 = rawCorrelations[chosenLag + 1];
+    const denom = 2 * (2 * y1 - y0 - y2);
+    if (Math.abs(denom) > 1e-9) {
+      const delta = (y2 - y0) / denom;
+      if (Math.abs(delta) <= 1.0) {
+        refinedLag = chosenLag + delta;
+      }
+    }
+  }
+
+  let calculatedBpm = (60 * envelopeSampleRate) / refinedLag;
+
+  // 6. 若估算落入 < 100 偏慢区间，检查是否存在强双倍频
   if (calculatedBpm < 100) {
     calculatedBpm *= 2;
   } else if (calculatedBpm > 220) {
@@ -185,15 +205,19 @@ export function detectBpmFromSlice(
   const validStart = Math.max(0, Math.min(startSec, endSec));
   const validEnd = Math.max(startSec, endSec);
 
-  const startSample = Math.max(0, Math.floor(validStart * sampleRate));
-  const endSample = Math.min(pcm.length, Math.ceil(validEnd * sampleRate));
+  // 严格按 hopSize (512) 整数倍将截取采样点对齐到全局 Hop 网格
+  // 确保不管用户如何毫秒级微调起止点，局部切片内的鼓点瞬态（Transient）相对于 512 样本块边界的相位绝对固定
+  // 彻底根除鼓点冲击被切块边界削顶切分导致的能量泄漏与跳变
+  const hopSize = 512;
+  const alignedStart = Math.max(0, Math.floor((validStart * sampleRate) / hopSize) * hopSize);
+  const alignedEnd = Math.min(pcm.length, Math.ceil((validEnd * sampleRate) / hopSize) * hopSize);
 
   // 截取区间不足 2.0 秒时返回 fallbackBpm，避免虚假推断
-  if (endSample - startSample < sampleRate * 2.0) {
+  if (alignedEnd - alignedStart < sampleRate * 2.0) {
     return fallbackBpm;
   }
 
-  const slice = pcm.subarray(startSample, endSample);
+  const slice = pcm.subarray(alignedStart, alignedEnd);
   // 切片计算严格闭环在区间内部，不设向后截断限制
   return detectBpmFromPcm(slice, sampleRate);
 }
