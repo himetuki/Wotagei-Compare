@@ -124,13 +124,13 @@ export async function synthesizeMetronomeBuffer(
   const totalSamples = Math.max(1, Math.round(outputDurationSec * sampleRate));
   const offlineCtx = new OfflineAudioContext(1, totalSamples, sampleRate);
 
-  // 离线动态范围压缩限幅管线
+  // 离线动态范围压缩限幅管线：充沛释放响度，母带级砖墙限幅杜绝破音与削顶失真
   const compressor = offlineCtx.createDynamicsCompressor();
-  compressor.threshold.setValueAtTime(-12, 0);
-  compressor.knee.setValueAtTime(8, 0);
-  compressor.ratio.setValueAtTime(8, 0);
-  compressor.attack.setValueAtTime(0.003, 0);
-  compressor.release.setValueAtTime(0.08, 0);
+  compressor.threshold.setValueAtTime(-1.5, 0);
+  compressor.knee.setValueAtTime(3, 0);
+  compressor.ratio.setValueAtTime(12, 0);
+  compressor.attack.setValueAtTime(0.001, 0);
+  compressor.release.setValueAtTime(0.04, 0);
   compressor.connect(offlineCtx.destination);
 
   const beatIntervalTau = 60 / effectiveBpm;
@@ -145,20 +145,20 @@ export async function synthesizeMetronomeBuffer(
       const isDownbeat = isDownbeatIndex(k);
 
       if (isDownbeat) {
-        // 重拍：1500Hz 三角波 + 800Hz 正弦波复合冲击 (总长 55ms)
+        // 重拍：1600Hz 三角波 + 800Hz 正弦波复合冲击 (总长 65ms)
         const oscHigh = offlineCtx.createOscillator();
         const oscLow = offlineCtx.createOscillator();
         const gainNode = offlineCtx.createGain();
 
         oscHigh.type = 'triangle';
-        oscHigh.frequency.setValueAtTime(1500, outTime);
+        oscHigh.frequency.setValueAtTime(1600, outTime);
 
         oscLow.type = 'sine';
         oscLow.frequency.setValueAtTime(800, outTime);
 
-        gainNode.gain.setValueAtTime(1.2, outTime);
-        gainNode.gain.setValueAtTime(1.2, outTime + 0.008);
-        gainNode.gain.exponentialRampToValueAtTime(0.001, outTime + 0.055);
+        gainNode.gain.setValueAtTime(1.1, outTime);
+        gainNode.gain.setValueAtTime(1.1, outTime + 0.010);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, outTime + 0.065);
 
         oscHigh.connect(gainNode);
         oscLow.connect(gainNode);
@@ -166,25 +166,25 @@ export async function synthesizeMetronomeBuffer(
 
         oscHigh.start(outTime);
         oscLow.start(outTime);
-        oscHigh.stop(outTime + 0.06);
-        oscLow.stop(outTime + 0.06);
+        oscHigh.stop(outTime + 0.075);
+        oscLow.stop(outTime + 0.075);
       } else {
-        // 弱拍：800Hz 三角波 (总长 45ms)
+        // 弱拍：1000Hz 三角波 (总长 50ms)
         const osc = offlineCtx.createOscillator();
         const gainNode = offlineCtx.createGain();
 
         osc.type = 'triangle';
-        osc.frequency.setValueAtTime(800, outTime);
+        osc.frequency.setValueAtTime(1000, outTime);
 
         gainNode.gain.setValueAtTime(0.9, outTime);
-        gainNode.gain.setValueAtTime(0.9, outTime + 0.005);
-        gainNode.gain.exponentialRampToValueAtTime(0.001, outTime + 0.045);
+        gainNode.gain.setValueAtTime(0.9, outTime + 0.006);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, outTime + 0.050);
 
         osc.connect(gainNode);
         gainNode.connect(compressor);
 
         osc.start(outTime);
-        osc.stop(outTime + 0.05);
+        osc.stop(outTime + 0.060);
       }
     }
   }

@@ -62,12 +62,12 @@ export class SynthesizedMetronome {
 
     if (!this.compressor) {
       const comp = this.ctx.createDynamicsCompressor();
-      // 动态范围压缩限幅器参数配置：充沛增益的同时杜绝任何破音与削顶失真
-      comp.threshold.setValueAtTime(-12, this.ctx.currentTime);
-      comp.knee.setValueAtTime(8, this.ctx.currentTime);
-      comp.ratio.setValueAtTime(8, this.ctx.currentTime);
-      comp.attack.setValueAtTime(0.003, this.ctx.currentTime);
-      comp.release.setValueAtTime(0.08, this.ctx.currentTime);
+      // 动态范围压缩限幅器参数配置：充沛释放响度，母带级砖墙限幅杜绝破音与削顶失真
+      comp.threshold.setValueAtTime(-1.5, this.ctx.currentTime);
+      comp.knee.setValueAtTime(3, this.ctx.currentTime);
+      comp.ratio.setValueAtTime(12, this.ctx.currentTime);
+      comp.attack.setValueAtTime(0.001, this.ctx.currentTime);
+      comp.release.setValueAtTime(0.04, this.ctx.currentTime);
       comp.connect(this.ctx.destination);
       this.compressor = comp;
     }
@@ -124,21 +124,21 @@ export class SynthesizedMetronome {
       const now = ctx.currentTime;
 
       if (isDownbeat) {
-        // 重拍：1500Hz 三角波 (高频清脆打击感) + 800Hz 正弦波 (中低频冲程 Punch)
+        // 重拍：1600Hz 三角波 (高频清脆穿透力) + 800Hz 正弦波 (中低频冲程 Punch)
         const oscHigh = ctx.createOscillator();
         const oscLow = ctx.createOscillator();
         const gainNode = ctx.createGain();
 
         oscHigh.type = 'triangle';
-        oscHigh.frequency.setValueAtTime(1500, now);
+        oscHigh.frequency.setValueAtTime(1600, now);
 
         oscLow.type = 'sine';
         oscLow.frequency.setValueAtTime(800, now);
 
-        // 强拍饱满打击包络 (总长 55ms)
-        gainNode.gain.setValueAtTime(1.2, now);
-        gainNode.gain.setValueAtTime(1.2, now + 0.008); // 保持 8ms 打击感
-        gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.055);
+        // 强拍饱满打击包络 (总长 65ms)
+        gainNode.gain.setValueAtTime(1.1, now);
+        gainNode.gain.setValueAtTime(1.1, now + 0.010); // 保持 10ms 打击感
+        gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.065);
 
         oscHigh.connect(gainNode);
         oscLow.connect(gainNode);
@@ -146,25 +146,25 @@ export class SynthesizedMetronome {
 
         oscHigh.start(now);
         oscLow.start(now);
-        oscHigh.stop(now + 0.06);
-        oscLow.stop(now + 0.06);
+        oscHigh.stop(now + 0.075);
+        oscLow.stop(now + 0.075);
       } else {
-        // 弱拍：800Hz 三角波单音脉冲 (纯净利落，总长 45ms)
+        // 弱拍：1000Hz 三角波单音脉冲 (纯净利落，总长 50ms)
         const osc = ctx.createOscillator();
         const gainNode = ctx.createGain();
 
         osc.type = 'triangle';
-        osc.frequency.setValueAtTime(800, now);
+        osc.frequency.setValueAtTime(1000, now);
 
         gainNode.gain.setValueAtTime(0.9, now);
-        gainNode.gain.setValueAtTime(0.9, now + 0.005);
-        gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.045);
+        gainNode.gain.setValueAtTime(0.9, now + 0.006);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.050);
 
         osc.connect(gainNode);
         gainNode.connect(compressor);
 
         osc.start(now);
-        osc.stop(now + 0.05);
+        osc.stop(now + 0.060);
       }
     } catch {
       // 容灾忽略静默降级
