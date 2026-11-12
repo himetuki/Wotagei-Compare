@@ -275,33 +275,38 @@ export const ExportPage: React.FC<ExportPageProps> = ({
   }, []);
 
   const seekPreview = useCallback(
-    (targetTau: number, onComplete?: () => void) => {
+    (targetTau: number, onComplete?: () => void, keepPlaying?: boolean) => {
       const clampedTau = Math.max(intersectStart, Math.min(intersectEnd, targetTau));
       setPreviewTau(clampedTau);
       previewTauRef.current = clampedTau;
       if (initialSoundSource === 'metronome') {
         metronomeRef.current.reset(clampedTau, timeline.effectiveBpm);
       }
+      const effectiveKeepPlaying =
+        typeof keepPlaying === 'boolean'
+          ? keepPlaying
+          : (isPreviewPlaying || engineRef.current?.getIsPlaying());
+
       engineRef.current?.seekToTau(
         clampedTau,
         () => {
           drawPreviewFrame();
           onComplete?.();
         },
-        false
+        effectiveKeepPlaying
       );
     },
-    [intersectStart, intersectEnd, initialSoundSource, timeline.effectiveBpm, drawPreviewFrame]
+    [intersectStart, intersectEnd, initialSoundSource, timeline.effectiveBpm, drawPreviewFrame, isPreviewPlaying]
   );
 
   const throttledSeek = useCallback(
-    (targetTau: number) => {
+    (targetTau: number, keepPlaying?: boolean) => {
       pendingSeekTauRef.current = targetTau;
       if (seekRafIdRef.current === null) {
         seekRafIdRef.current = requestAnimationFrame(() => {
           seekRafIdRef.current = null;
           if (pendingSeekTauRef.current !== null) {
-            seekPreview(pendingSeekTauRef.current);
+            seekPreview(pendingSeekTauRef.current, undefined, keepPlaying);
             pendingSeekTauRef.current = null;
           }
         });
@@ -343,7 +348,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     setDraggingHandle(handle);
     const targetTau = handle === 'A' ? clipStart : clipEnd;
-    seekPreview(targetTau);
+    seekPreview(targetTau, undefined, false);
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
@@ -355,11 +360,11 @@ export const ExportPage: React.FC<ExportPageProps> = ({
     if (draggingHandle === 'A') {
       const val = Math.max(intersectStart, Math.min(clipEnd - 0.2, targetTau));
       setClipStart(val);
-      throttledSeek(val);
+      throttledSeek(val, false);
     } else if (draggingHandle === 'B') {
       const val = Math.min(intersectEnd, Math.max(clipStart + 0.2, targetTau));
       setClipEnd(val);
-      throttledSeek(val);
+      throttledSeek(val, false);
     }
   };
 
@@ -374,7 +379,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
       } catch {}
       const finalTau = draggingHandle === 'A' ? clipStart : clipEnd;
       setDraggingHandle(null);
-      seekPreview(finalTau);
+      seekPreview(finalTau, undefined, false);
     }
   };
 
@@ -390,11 +395,11 @@ export const ExportPage: React.FC<ExportPageProps> = ({
     if (distA <= distB) {
       const val = Math.max(intersectStart, Math.min(clipEnd - 0.2, targetTau));
       setClipStart(val);
-      seekPreview(val);
+      seekPreview(val, undefined, false);
     } else {
       const val = Math.min(intersectEnd, Math.max(clipStart + 0.2, targetTau));
       setClipEnd(val);
-      seekPreview(val);
+      seekPreview(val, undefined, false);
     }
   };
 
@@ -637,7 +642,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
                       ensureStopped();
                       const val = Math.min(previewTau, clipEnd - 0.2);
                       setClipStart(val);
-                      seekPreview(val);
+                      seekPreview(val, undefined, false);
                     }}
                   >
                     设当前为 A
@@ -653,7 +658,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
                       ensureStopped();
                       const val = Math.max(previewTau, clipStart + 0.2);
                       setClipEnd(val);
-                      seekPreview(val);
+                      seekPreview(val, undefined, false);
                     }}
                   >
                     设当前为 B
