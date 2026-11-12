@@ -148,6 +148,14 @@ export const Workbench: React.FC<WorkbenchProps> = ({
 
   const metronomeRef = useRef<SynthesizedMetronome>(new SynthesizedMetronome());
 
+  // 双视频独立寻道互斥与起播就绪防抖控制
+  const isSeeking1Ref = useRef<boolean>(false);
+  const isSeeking2Ref = useRef<boolean>(false);
+  const pendingTarget1Ref = useRef<number | null>(null);
+  const pendingTarget2Ref = useRef<number | null>(null);
+  const lastHardSeekTimeRef = useRef<number>(0);
+  const isStartingPlayRef = useRef<boolean>(false);
+
   // 同步音频输出通道与变速不变调属性
   useEffect(() => {
     const v1 = videoRef1.current;
@@ -170,10 +178,53 @@ export const Workbench: React.FC<WorkbenchProps> = ({
   }, [soundSource]);
 
   /**
+   * 单路视频安全寻道：正在寻道期间排队最新目标，绝不高频重复重置 currentTime
+   */
+  const safeSeek = useCallback(
+    (
+      video: HTMLVideoElement,
+      targetTime: number,
+      isSeekingRef: React.MutableRefObject<boolean>,
+      pendingTargetRef: React.MutableRefObject<number | null>,
+      onDone?: () => void
+    ) => {
+      const clamped = Math.max(0, Math.min(video.duration || 0, targetTime));
+      if (Math.abs(video.currentTime - clamped) < 0.005) {
+        onDone?.();
+        return;
+      }
+
+      if (isSeekingRef.current || video.seeking) {
+        pendingTargetRef.current = clamped;
+        return;
+      }
+
+      isSeekingRef.current = true;
+      pendingTargetRef.current = null;
+
+      const onSeeked = () => {
+        video.removeEventListener('seeked', onSeeked);
+        isSeekingRef.current = false;
+        if (pendingTargetRef.current !== null) {
+          const next = pendingTargetRef.current;
+          pendingTargetRef.current = null;
+          safeSeek(video, next, isSeekingRef, pendingTargetRef, onDone);
+        } else {
+          onDone?.();
+        }
+      };
+
+      video.addEventListener('seeked', onSeeked, { once: true });
+      video.currentTime = clamped;
+    },
+    []
+  );
+
+  /**
    * 同步定位两路视频至统一时间轴位置
    */
   const seekToTau = useCallback(
-    (targetTau: number) => {
+    (targetTau: number, onComplete?: () => void) => {
       const clampedTau = Math.max(
         timeline.intersectInterval.start,
         Math.min(timeline.intersectInterval.end, targetTau)
@@ -189,47 +240,95 @@ export const Workbench: React.FC<WorkbenchProps> = ({
       const t1 = mapTauToSourceTime(clampedTau, a1, timeline.rate1);
       const t2 = mapTauToSourceTime(clampedTau, a2, timeline.rate2);
 
+      let v1Finished = !v1 || !isFinite(t1);
+      let v2Finished = !v2 || !isFinite(t2);
+
+      const checkBoth = () => {
+        if (v1Finished && v2Finished) {
+          onComplete?.();
+        }
+      };
+
       if (v1 && isFinite(t1)) {
-        v1.currentTime = Math.max(0, Math.min(video1.duration, t1));
+        safeSeek(v1, t1, isSeeking1Ref, pendingTarget1Ref, () => {
+          v1Finished = true;
+          checkBoth();
+        });
       }
       if (v2 && isFinite(t2)) {
-        v2.currentTime = Math.max(0, Math.min(video2.duration, t2));
+        safeSeek(v2, t2, isSeeking2Ref, pendingTarget2Ref, () => {
+          v2Finished = true;
+          checkBoth();
+        });
+      }
+
+      if (v1Finished && v2Finished) {
+        checkBoth();
       }
     },
-    [timeline, video1, video2, a1, a2]
+    [timeline, a1, a2, safeSeek]
   );
 
   /**
-   * 切换播放与暂停状态
+   * 切换播放与暂停状态（带起播就绪栅栏）
    */
   const togglePlay = () => {
     const v1 = videoRef1.current;
     const v2 = videoRef2.current;
     if (!v1 || !v2) return;
 
-    if (isPlaying) {
+    if (isPlaying || isStartingPlayRef.current) {
+      isStartingPlayRef.current = false;
       v1.pause();
       v2.pause();
       setIsPlaying(false);
-    } else {
-      if (tauRef.current >= timeline.intersectInterval.end - 0.05) {
-        seekToTau(timeline.intersectInterval.start);
-      }
-      metronomeRef.current.reset(tauRef.current, timeline.effectiveBpm);
+      return;
+    }
+
+    let startTau = tauRef.current;
+    if (startTau >= timeline.intersectInterval.end - 0.05) {
+      startTau = timeline.intersectInterval.start;
+    }
+
+    isStartingPlayRef.current = true;
+
+    const executeStart = () => {
+      if (!isStartingPlayRef.current) return;
+      isStartingPlayRef.current = false;
+
+      metronomeRef.current.reset(startTau, timeline.effectiveBpm);
 
       v1.playbackRate = getPlaybackRate(slowMotionRate, timeline.rate1);
       v2.playbackRate = getPlaybackRate(slowMotionRate, timeline.rate2);
 
-      const v1Active = isTauInVideoRange(tauRef.current, timeline.span1);
-      const v2Active = isTauInVideoRange(tauRef.current, timeline.span2);
+      const v1Active = isTauInVideoRange(startTau, timeline.span1);
+      const v2Active = isTauInVideoRange(startTau, timeline.span2);
 
-      if (v1Active) v1.play().catch(() => {});
+      const plays: Promise<void>[] = [];
+      if (v1Active) plays.push(v1.play().catch(() => {}));
       else v1.pause();
 
-      if (v2Active) v2.play().catch(() => {});
+      if (v2Active) plays.push(v2.play().catch(() => {}));
       else v2.pause();
 
-      setIsPlaying(true);
+      Promise.all(plays).then(() => {
+        setIsPlaying(true);
+      });
+    };
+
+    const isReady1 = !isSeeking1Ref.current && !v1.seeking && v1.readyState >= 2;
+    const isReady2 = !isSeeking2Ref.current && !v2.seeking && v2.readyState >= 2;
+
+    if (isReady1 && isReady2) {
+      executeStart();
+    } else {
+      let timeoutId: number;
+      const onReady = () => {
+        window.clearTimeout(timeoutId);
+        executeStart();
+      };
+      timeoutId = window.setTimeout(onReady, 250);
+      seekToTau(startTau, onReady);
     }
   };
 
@@ -251,17 +350,21 @@ export const Workbench: React.FC<WorkbenchProps> = ({
    */
   const playFromPreRoll = () => {
     const targetTau = Math.max(timeline.intersectInterval.start, -1.0);
-    seekToTau(targetTau);
-    const v1 = videoRef1.current;
-    const v2 = videoRef2.current;
-    if (v1 && v2) {
-      metronomeRef.current.reset(targetTau, timeline.effectiveBpm);
-      v1.playbackRate = getPlaybackRate(slowMotionRate, timeline.rate1);
-      v2.playbackRate = getPlaybackRate(slowMotionRate, timeline.rate2);
-      v1.play().catch(() => {});
-      v2.play().catch(() => {});
-      setIsPlaying(true);
-    }
+    seekToTau(targetTau, () => {
+      const v1 = videoRef1.current;
+      const v2 = videoRef2.current;
+      if (v1 && v2) {
+        metronomeRef.current.reset(targetTau, timeline.effectiveBpm);
+        v1.playbackRate = getPlaybackRate(slowMotionRate, timeline.rate1);
+        v2.playbackRate = getPlaybackRate(slowMotionRate, timeline.rate2);
+        Promise.all([
+          v1.play().catch(() => {}),
+          v2.play().catch(() => {}),
+        ]).then(() => {
+          setIsPlaying(true);
+        });
+      }
+    });
   };
 
   /**
@@ -343,15 +446,23 @@ export const Workbench: React.FC<WorkbenchProps> = ({
           if (v1) {
             if (v1Active) {
               if (v1.paused) {
-                v1.currentTime = Math.max(0, Math.min(video1.duration, expectedT1));
-                v1.playbackRate = baseRate1;
-                v1.play().catch(() => {});
+                safeSeek(v1, expectedT1, isSeeking1Ref, pendingTarget1Ref, () => {
+                  v1.playbackRate = baseRate1;
+                  v1.play().catch(() => {});
+                });
               } else if (masterVideo !== v1) {
                 const diff = v1.currentTime - expectedT1;
-                if (Math.abs(diff) > 0.25) {
-                  v1.currentTime = Math.max(0, Math.min(video1.duration, expectedT1));
-                } else if (Math.abs(diff) > 0.02) {
-                  v1.playbackRate = baseRate1 * (diff < 0 ? 1.05 : 0.95);
+                if (Math.abs(diff) > 0.3) {
+                  const canHardSeek =
+                    !isSeeking1Ref.current &&
+                    !v1.seeking &&
+                    now - lastHardSeekTimeRef.current > 600;
+                  if (canHardSeek) {
+                    lastHardSeekTimeRef.current = now;
+                    safeSeek(v1, expectedT1, isSeeking1Ref, pendingTarget1Ref);
+                  }
+                } else if (Math.abs(diff) > 0.03) {
+                  v1.playbackRate = baseRate1 * (diff < 0 ? 1.08 : 0.92);
                 } else {
                   v1.playbackRate = baseRate1;
                 }
@@ -366,15 +477,23 @@ export const Workbench: React.FC<WorkbenchProps> = ({
           if (v2) {
             if (v2Active) {
               if (v2.paused) {
-                v2.currentTime = Math.max(0, Math.min(video2.duration, expectedT2));
-                v2.playbackRate = baseRate2;
-                v2.play().catch(() => {});
+                safeSeek(v2, expectedT2, isSeeking2Ref, pendingTarget2Ref, () => {
+                  v2.playbackRate = baseRate2;
+                  v2.play().catch(() => {});
+                });
               } else if (masterVideo !== v2) {
                 const diff = v2.currentTime - expectedT2;
-                if (Math.abs(diff) > 0.25) {
-                  v2.currentTime = Math.max(0, Math.min(video2.duration, expectedT2));
-                } else if (Math.abs(diff) > 0.02) {
-                  v2.playbackRate = baseRate2 * (diff < 0 ? 1.05 : 0.95);
+                if (Math.abs(diff) > 0.3) {
+                  const canHardSeek =
+                    !isSeeking2Ref.current &&
+                    !v2.seeking &&
+                    now - lastHardSeekTimeRef.current > 600;
+                  if (canHardSeek) {
+                    lastHardSeekTimeRef.current = now;
+                    safeSeek(v2, expectedT2, isSeeking2Ref, pendingTarget2Ref);
+                  }
+                } else if (Math.abs(diff) > 0.03) {
+                  v2.playbackRate = baseRate2 * (diff < 0 ? 1.08 : 0.92);
                 } else {
                   v2.playbackRate = baseRate2;
                 }

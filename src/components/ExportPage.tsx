@@ -73,6 +73,14 @@ export const ExportPage: React.FC<ExportPageProps> = ({
   const v2Ref = useRef<HTMLVideoElement>(null);
   const metronomeRef = useRef<SynthesizedMetronome>(new SynthesizedMetronome());
 
+  // 双视频独立寻道互斥与起播就绪防抖控制
+  const isSeeking1Ref = useRef<boolean>(false);
+  const isSeeking2Ref = useRef<boolean>(false);
+  const pendingTarget1Ref = useRef<number | null>(null);
+  const pendingTarget2Ref = useRef<number | null>(null);
+  const lastHardSeekTimeRef = useRef<number>(0);
+  const isStartingPlayRef = useRef<boolean>(false);
+
   // 配置双视频音轨与静音状态
   useEffect(() => {
     const v1 = v1Ref.current;
@@ -158,8 +166,51 @@ export const ExportPage: React.FC<ExportPageProps> = ({
     video2,
   ]);
 
+  /**
+   * 单路视频安全寻道：正在寻道期间排队最新目标，绝不高频重复重置 currentTime
+   */
+  const safeSeek = useCallback(
+    (
+      video: HTMLVideoElement,
+      targetTime: number,
+      isSeekingRef: React.MutableRefObject<boolean>,
+      pendingTargetRef: React.MutableRefObject<number | null>,
+      onDone?: () => void
+    ) => {
+      const clamped = Math.max(0, Math.min(video.duration || 0, targetTime));
+      if (Math.abs(video.currentTime - clamped) < 0.005) {
+        onDone?.();
+        return;
+      }
+
+      if (isSeekingRef.current || video.seeking) {
+        pendingTargetRef.current = clamped;
+        return;
+      }
+
+      isSeekingRef.current = true;
+      pendingTargetRef.current = null;
+
+      const onSeeked = () => {
+        video.removeEventListener('seeked', onSeeked);
+        isSeekingRef.current = false;
+        if (pendingTargetRef.current !== null) {
+          const next = pendingTargetRef.current;
+          pendingTargetRef.current = null;
+          safeSeek(video, next, isSeekingRef, pendingTargetRef, onDone);
+        } else {
+          onDone?.();
+        }
+      };
+
+      video.addEventListener('seeked', onSeeked, { once: true });
+      video.currentTime = clamped;
+    },
+    []
+  );
+
   const seekPreview = useCallback(
-    (targetTau: number) => {
+    (targetTau: number, onComplete?: () => void) => {
       const v1 = v1Ref.current;
       const v2 = v2Ref.current;
       const clampedTau = Math.max(intersectStart, Math.min(intersectEnd, targetTau));
@@ -170,16 +221,48 @@ export const ExportPage: React.FC<ExportPageProps> = ({
       const t1 = mapTauToSourceTime(clampedTau, a1, timeline.rate1);
       const t2 = mapTauToSourceTime(clampedTau, a2, timeline.rate2);
 
-      if (v1) v1.currentTime = Math.max(0, Math.min(video1.duration, t1));
-      if (v2) v2.currentTime = Math.max(0, Math.min(video2.duration, t2));
+      let v1Finished = !v1;
+      let v2Finished = !v2;
 
-      if (initialSoundSource === 'metronome') {
-        metronomeRef.current.reset(clampedTau, timeline.effectiveBpm);
+      const checkBoth = () => {
+        if (v1Finished && v2Finished) {
+          if (initialSoundSource === 'metronome') {
+            metronomeRef.current.reset(clampedTau, timeline.effectiveBpm);
+          }
+          drawPreviewFrame();
+          onComplete?.();
+        }
+      };
+
+      if (v1) {
+        safeSeek(v1, t1, isSeeking1Ref, pendingTarget1Ref, () => {
+          v1Finished = true;
+          checkBoth();
+        });
+      }
+      if (v2) {
+        safeSeek(v2, t2, isSeeking2Ref, pendingTarget2Ref, () => {
+          v2Finished = true;
+          checkBoth();
+        });
       }
 
-      drawPreviewFrame();
+      if (!v1 && !v2) {
+        checkBoth();
+      }
     },
-    [a1, a2, drawPreviewFrame, intersectEnd, intersectStart, timeline.rate1, timeline.rate2, video1.duration, video2.duration]
+    [
+      a1,
+      a2,
+      drawPreviewFrame,
+      initialSoundSource,
+      intersectEnd,
+      intersectStart,
+      safeSeek,
+      timeline.effectiveBpm,
+      timeline.rate1,
+      timeline.rate2,
+    ]
   );
 
   // 初始加载绘制第一帧
@@ -187,22 +270,30 @@ export const ExportPage: React.FC<ExportPageProps> = ({
     seekPreview(previewTau);
   }, []);
 
-  // 播放 / 暂停切换
+  // 播放 / 暂停切换（带起播就绪栅栏）
   const togglePreviewPlay = () => {
     const v1 = v1Ref.current;
     const v2 = v2Ref.current;
     if (!v1 || !v2) return;
 
-    if (isPreviewPlaying) {
+    if (isPreviewPlaying || isStartingPlayRef.current) {
+      isStartingPlayRef.current = false;
       v1.pause();
       v2.pause();
       setIsPreviewPlaying(false);
-    } else {
-      let startTau = previewTauRef.current;
-      if (startTau >= clipEnd - 0.05 || startTau < clipStart) {
-        startTau = clipStart;
-        seekPreview(startTau);
-      }
+      return;
+    }
+
+    let startTau = previewTauRef.current;
+    if (startTau >= clipEnd - 0.05 || startTau < clipStart) {
+      startTau = clipStart;
+    }
+
+    isStartingPlayRef.current = true;
+
+    const executeStart = () => {
+      if (!isStartingPlayRef.current) return;
+      isStartingPlayRef.current = false;
 
       v1.playbackRate = getPlaybackRate(initialRate, timeline.rate1);
       v2.playbackRate = getPlaybackRate(initialRate, timeline.rate2);
@@ -224,9 +315,28 @@ export const ExportPage: React.FC<ExportPageProps> = ({
         v2.muted = true;
       }
 
-      v1.play().catch(() => {});
-      v2.play().catch(() => {});
-      setIsPreviewPlaying(true);
+      Promise.all([
+        v1.play().catch(() => {}),
+        v2.play().catch(() => {}),
+      ]).then(() => {
+        setIsPreviewPlaying(true);
+      });
+    };
+
+    // 起播就绪等待栅栏：确认双端视频已完成寻道并具备可渲染数据
+    const isReady1 = !isSeeking1Ref.current && !v1.seeking && v1.readyState >= 2;
+    const isReady2 = !isSeeking2Ref.current && !v2.seeking && v2.readyState >= 2;
+
+    if (isReady1 && isReady2) {
+      executeStart();
+    } else {
+      let timeoutId: number;
+      const onReady = () => {
+        window.clearTimeout(timeoutId);
+        executeStart();
+      };
+      timeoutId = window.setTimeout(onReady, 250);
+      seekPreview(startTau, onReady);
     }
   };
 
@@ -235,45 +345,109 @@ export const ExportPage: React.FC<ExportPageProps> = ({
     if (!isPreviewPlaying) return;
 
     let animId: number;
+    let lastTime = performance.now();
 
-    const loop = () => {
+    const loop = (now: number) => {
+      const deltaSec = (now - lastTime) / 1000;
+      lastTime = now;
+
       const v1 = v1Ref.current;
       const v2 = v2Ref.current;
 
-      if (v1 && v2 && !v1.paused) {
-        const currentTau = (v1.currentTime - a1) / timeline.rate1;
-        previewTauRef.current = currentTau;
-        setPreviewTau(currentTau);
-
-        const expectedT2 = mapTauToSourceTime(currentTau, a2, timeline.rate2);
-        const diff = v2.currentTime - expectedT2;
+      if (v1 && v2) {
+        const baseRate1 = getPlaybackRate(initialRate, timeline.rate1);
         const baseRate2 = getPlaybackRate(initialRate, timeline.rate2);
-        if (Math.abs(diff) > 0.25) {
-          v2.currentTime = Math.max(0, Math.min(video2.duration, expectedT2));
-        } else if (Math.abs(diff) > 0.02) {
-          v2.playbackRate = baseRate2 * (diff < 0 ? 1.05 : 0.95);
-        } else {
-          v2.playbackRate = baseRate2;
+
+        // 1. 自适应确定主时钟 (Master)
+        let currentTau = previewTauRef.current;
+        let masterVideo: HTMLVideoElement | null = null;
+        let masterRate = timeline.rate1;
+        let masterAnchor = a1;
+
+        if (initialSoundSource === 'video2' && !v2.paused && !v2.seeking && v2.readyState >= 2) {
+          masterVideo = v2;
+          masterRate = timeline.rate2;
+          masterAnchor = a2;
+        } else if (!v1.paused && !v1.seeking && v1.readyState >= 2) {
+          masterVideo = v1;
+          masterRate = timeline.rate1;
+          masterAnchor = a1;
         }
 
+        if (masterVideo) {
+          currentTau = (masterVideo.currentTime - masterAnchor) / masterRate;
+        } else {
+          currentTau += deltaSec * initialRate;
+        }
+
+        // 2. 检查 A-B 截取区间终点循环回跳
         if (currentTau >= clipEnd) {
-          const startT1 = mapTauToSourceTime(clipStart, a1, timeline.rate1);
-          const startT2 = mapTauToSourceTime(clipStart, a2, timeline.rate2);
-          v1.currentTime = Math.max(0, Math.min(video1.duration, startT1));
-          v2.currentTime = Math.max(0, Math.min(video2.duration, startT2));
           previewTauRef.current = clipStart;
           setPreviewTau(clipStart);
           if (initialSoundSource === 'metronome') {
             metronomeRef.current.reset(clipStart, timeline.effectiveBpm);
           }
-        }
+          const startT1 = mapTauToSourceTime(clipStart, a1, timeline.rate1);
+          const startT2 = mapTauToSourceTime(clipStart, a2, timeline.rate2);
+          safeSeek(v1, startT1, isSeeking1Ref, pendingTarget1Ref);
+          safeSeek(v2, startT2, isSeeking2Ref, pendingTarget2Ref);
+        } else {
+          previewTauRef.current = currentTau;
+          setPreviewTau(currentTau);
 
-        if (initialSoundSource === 'metronome') {
-          metronomeRef.current.update(
-            currentTau,
-            timeline.effectiveBpm,
-            true
-          );
+          if (initialSoundSource === 'metronome') {
+            metronomeRef.current.update(
+              currentTau,
+              timeline.effectiveBpm,
+              true
+            );
+          }
+
+          // 3. 从属视频防雪崩锁相环追赶 (PLL)
+          const expectedT1 = mapTauToSourceTime(currentTau, a1, timeline.rate1);
+          const expectedT2 = mapTauToSourceTime(currentTau, a2, timeline.rate2);
+
+          // 调谐视频 1
+          if (masterVideo !== v1) {
+            const diff1 = v1.currentTime - expectedT1;
+            if (Math.abs(diff1) > 0.3) {
+              const canHardSeek =
+                !isSeeking1Ref.current &&
+                !v1.seeking &&
+                now - lastHardSeekTimeRef.current > 600;
+              if (canHardSeek) {
+                lastHardSeekTimeRef.current = now;
+                safeSeek(v1, expectedT1, isSeeking1Ref, pendingTarget1Ref);
+              }
+            } else if (Math.abs(diff1) > 0.03) {
+              v1.playbackRate = baseRate1 * (diff1 < 0 ? 1.08 : 0.92);
+            } else {
+              v1.playbackRate = baseRate1;
+            }
+          } else {
+            v1.playbackRate = baseRate1;
+          }
+
+          // 调谐视频 2
+          if (masterVideo !== v2) {
+            const diff2 = v2.currentTime - expectedT2;
+            if (Math.abs(diff2) > 0.3) {
+              const canHardSeek =
+                !isSeeking2Ref.current &&
+                !v2.seeking &&
+                now - lastHardSeekTimeRef.current > 600;
+              if (canHardSeek) {
+                lastHardSeekTimeRef.current = now;
+                safeSeek(v2, expectedT2, isSeeking2Ref, pendingTarget2Ref);
+              }
+            } else if (Math.abs(diff2) > 0.03) {
+              v2.playbackRate = baseRate2 * (diff2 < 0 ? 1.08 : 0.92);
+            } else {
+              v2.playbackRate = baseRate2;
+            }
+          } else {
+            v2.playbackRate = baseRate2;
+          }
         }
       }
 
@@ -292,11 +466,12 @@ export const ExportPage: React.FC<ExportPageProps> = ({
     clipStart,
     clipEnd,
     initialRate,
+    initialSoundSource,
     a1,
     a2,
     timeline,
-    video2.duration,
     drawPreviewFrame,
+    safeSeek,
   ]);
 
   const totalIntersectSpan = Math.max(0.01, intersectEnd - intersectStart);
