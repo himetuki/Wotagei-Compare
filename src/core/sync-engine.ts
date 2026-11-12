@@ -29,7 +29,7 @@ export interface DualVideoSyncConfig {
   soundSource: SoundSource;
   slowMotionRate: SlowMotionRate;
   loopInterval?: TimeInterval;
-  onTauUpdate?: (tau: number) => void;
+  onTauUpdate?: (tau: number, isPlaying?: boolean) => void;
   onPlayingChange?: (isPlaying: boolean) => void;
 }
 
@@ -249,7 +249,7 @@ export class DualVideoSyncEngine {
   private slowMotionRate: SlowMotionRate;
   private loopInterval?: TimeInterval;
 
-  private onTauUpdate?: (tau: number) => void;
+  private onTauUpdate?: (tau: number, isPlaying?: boolean) => void;
   private onPlayingChange?: (isPlaying: boolean) => void;
 
   private currentTau: number;
@@ -386,7 +386,7 @@ export class DualVideoSyncEngine {
     const clampedTau = Math.max(intersect.start, Math.min(intersect.end, targetTau));
 
     this.currentTau = clampedTau;
-    this.onTauUpdate?.(clampedTau);
+    this.onTauUpdate?.(clampedTau, false);
 
     const t1 = mapTauToSourceTime(clampedTau, this.anchor1, this.timeline.rate1);
     const t2 = mapTauToSourceTime(clampedTau, this.anchor2, this.timeline.rate2);
@@ -444,7 +444,7 @@ export class DualVideoSyncEngine {
     let clampedTau = Math.max(loopStart, Math.min(loopEnd - 0.05, targetTau));
 
     this.currentTau = clampedTau;
-    this.onTauUpdate?.(clampedTau);
+    this.onTauUpdate?.(clampedTau, false);
 
     const t1 = mapTauToSourceTime(clampedTau, this.anchor1, this.timeline.rate1);
     const t2 = mapTauToSourceTime(clampedTau, this.anchor2, this.timeline.rate2);
@@ -627,7 +627,7 @@ export class DualVideoSyncEngine {
     }
 
     this.currentTau = tau;
-    this.onTauUpdate?.(tau);
+    this.onTauUpdate?.(tau, true);
 
     const v1Active = isTauInVideoRange(tau, this.timeline.span1);
     const v2Active = isTauInVideoRange(tau, this.timeline.span2);

@@ -22,6 +22,7 @@ import { calculateTriLineAlignment, AlignmentTransform } from '../core/geometry.
 import {
   calculateUnifiedTimeline,
   isTauInVideoRange,
+  UnifiedTimelineResult,
 } from '../core/timeline.ts';
 import { renderComparisonFrame, ComparisonRenderState } from '../core/renderer.ts';
 import { SynthesizedMetronome } from '../core/metronome.ts';
@@ -147,6 +148,10 @@ export const Workbench: React.FC<WorkbenchProps> = ({
   }, [video1, video2]);
 
   const metronomeRef = useRef<SynthesizedMetronome>(new SynthesizedMetronome());
+  const soundSourceRef = useRef<SoundSource>(soundSource);
+  soundSourceRef.current = soundSource;
+  const timelineRef = useRef<UnifiedTimelineResult>(timeline);
+  timelineRef.current = timeline;
 
   // 初始化与连接 DualVideoSyncEngine
   useEffect(() => {
@@ -159,11 +164,12 @@ export const Workbench: React.FC<WorkbenchProps> = ({
       anchor2: a2,
       soundSource,
       slowMotionRate,
-      onTauUpdate: (nextTau) => {
+      onTauUpdate: (nextTau, isEnginePlaying) => {
         setTau(nextTau);
         tauRef.current = nextTau;
-        if (soundSource === 'metronome') {
-          metronomeRef.current.update(nextTau, timeline.effectiveBpm, true);
+        const activePlaying = isEnginePlaying ?? engineRef.current?.getIsPlaying() ?? false;
+        if (soundSourceRef.current === 'metronome' && activePlaying) {
+          metronomeRef.current.update(nextTau, timelineRef.current.effectiveBpm, true);
         }
       },
       onPlayingChange: (playing) => {
@@ -473,7 +479,12 @@ export const Workbench: React.FC<WorkbenchProps> = ({
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => setSoundSource(item.id)}
+                  onClick={() => {
+                    setSoundSource(item.id);
+                    if (item.id === 'metronome') {
+                      metronomeRef.current.reset(tauRef.current, timeline.effectiveBpm);
+                    }
+                  }}
                   className={`seg-btn ${soundSource === item.id ? 'active' : ''}`}
                   style={{ padding: '0 6px' }}
                 >

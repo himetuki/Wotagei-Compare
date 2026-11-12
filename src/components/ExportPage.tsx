@@ -74,6 +74,8 @@ export const ExportPage: React.FC<ExportPageProps> = ({
   const v2Ref = useRef<HTMLVideoElement>(null);
   const engineRef = useRef<DualVideoSyncEngine | null>(null);
   const metronomeRef = useRef<SynthesizedMetronome>(new SynthesizedMetronome());
+  const timelineRef = useRef<UnifiedTimelineResult>(timeline);
+  timelineRef.current = timeline;
 
   // 计算截取时长、慢放后成片时长与总帧数
   const clipDuration = Math.max(0.1, clipEnd - clipStart);
@@ -149,11 +151,12 @@ export const ExportPage: React.FC<ExportPageProps> = ({
       soundSource: initialSoundSource,
       slowMotionRate: initialRate,
       loopInterval: { start: clipStart, end: clipEnd },
-      onTauUpdate: (nextTau) => {
+      onTauUpdate: (nextTau, isEnginePlaying) => {
         setPreviewTau(nextTau);
         previewTauRef.current = nextTau;
-        if (initialSoundSource === 'metronome') {
-          metronomeRef.current.update(nextTau, timeline.effectiveBpm, true);
+        const activePlaying = isEnginePlaying ?? engineRef.current?.getIsPlaying() ?? false;
+        if (initialSoundSource === 'metronome' && activePlaying) {
+          metronomeRef.current.update(nextTau, timelineRef.current.effectiveBpm, true);
         }
         drawPreviewFrame();
       },
@@ -180,7 +183,10 @@ export const ExportPage: React.FC<ExportPageProps> = ({
     engineRef.current?.updateConfig({
       loopInterval: { start: clipStart, end: clipEnd },
     });
-  }, [clipStart, clipEnd]);
+    if (initialSoundSource === 'metronome') {
+      metronomeRef.current.reset(previewTauRef.current, timeline.effectiveBpm);
+    }
+  }, [clipStart, clipEnd, initialSoundSource, timeline.effectiveBpm]);
 
   const seekPreview = useCallback(
     (targetTau: number, onComplete?: () => void) => {

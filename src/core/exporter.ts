@@ -18,6 +18,7 @@ import type { AlignmentTransform } from './geometry.ts';
 import type { UnifiedTimelineResult } from './timeline.ts';
 import { mapTauToSourceTime, isTauInVideoRange } from './timeline.ts';
 import { renderComparisonFrame, ComparisonRenderState } from './renderer.ts';
+import { isDownbeatIndex } from './metronome.ts';
 import type { LoadedVideoItem } from '../components/ImportStep.tsx';
 
 export interface ExportProgressInfo {
@@ -109,8 +110,10 @@ async function isAacAudioSupported(sampleRate: number): Promise<boolean> {
 
 /**
  * 离线合成节拍器音轨数据 (OfflineAudioContext)
+ * 严格以 tau = 0 锁相为小节第 1 拍重拍，采用绝对整数拍号步进消除累加误差，
+ * 并应用复合谐波打击音色与动态范围压缩限幅
  */
-async function synthesizeMetronomeBuffer(
+export async function synthesizeMetronomeBuffer(
   exportStart: number,
   exportEnd: number,
   outputDurationSec: number,
@@ -121,26 +124,69 @@ async function synthesizeMetronomeBuffer(
   const totalSamples = Math.max(1, Math.round(outputDurationSec * sampleRate));
   const offlineCtx = new OfflineAudioContext(1, totalSamples, sampleRate);
 
+  // 离线动态范围压缩限幅管线
+  const compressor = offlineCtx.createDynamicsCompressor();
+  compressor.threshold.setValueAtTime(-12, 0);
+  compressor.knee.setValueAtTime(8, 0);
+  compressor.ratio.setValueAtTime(8, 0);
+  compressor.attack.setValueAtTime(0.003, 0);
+  compressor.release.setValueAtTime(0.08, 0);
+  compressor.connect(offlineCtx.destination);
+
   const beatIntervalTau = 60 / effectiveBpm;
-  let tauBeat = Math.ceil(exportStart / beatIntervalTau) * beatIntervalTau;
+  const kStart = Math.ceil(exportStart / beatIntervalTau - 1e-5);
+  const kEnd = Math.floor(exportEnd / beatIntervalTau + 1e-5);
 
-  while (tauBeat <= exportEnd) {
+  for (let k = kStart; k <= kEnd; k++) {
+    const tauBeat = k * beatIntervalTau;
     const outTime = (tauBeat - exportStart) / slowMotionRate;
+
     if (outTime >= 0 && outTime < outputDurationSec) {
-      const osc = offlineCtx.createOscillator();
-      const gain = offlineCtx.createGain();
-      const beatIndex = Math.round(tauBeat / beatIntervalTau);
-      osc.frequency.setValueAtTime(beatIndex % 4 === 0 ? 1200 : 800, outTime);
+      const isDownbeat = isDownbeatIndex(k);
 
-      gain.gain.setValueAtTime(0.7, outTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, outTime + 0.035);
+      if (isDownbeat) {
+        // 重拍：1500Hz 三角波 + 800Hz 正弦波复合冲击 (总长 55ms)
+        const oscHigh = offlineCtx.createOscillator();
+        const oscLow = offlineCtx.createOscillator();
+        const gainNode = offlineCtx.createGain();
 
-      osc.connect(gain);
-      gain.connect(offlineCtx.destination);
-      osc.start(outTime);
-      osc.stop(outTime + 0.04);
+        oscHigh.type = 'triangle';
+        oscHigh.frequency.setValueAtTime(1500, outTime);
+
+        oscLow.type = 'sine';
+        oscLow.frequency.setValueAtTime(800, outTime);
+
+        gainNode.gain.setValueAtTime(1.2, outTime);
+        gainNode.gain.setValueAtTime(1.2, outTime + 0.008);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, outTime + 0.055);
+
+        oscHigh.connect(gainNode);
+        oscLow.connect(gainNode);
+        gainNode.connect(compressor);
+
+        oscHigh.start(outTime);
+        oscLow.start(outTime);
+        oscHigh.stop(outTime + 0.06);
+        oscLow.stop(outTime + 0.06);
+      } else {
+        // 弱拍：800Hz 三角波 (总长 45ms)
+        const osc = offlineCtx.createOscillator();
+        const gainNode = offlineCtx.createGain();
+
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(800, outTime);
+
+        gainNode.gain.setValueAtTime(0.9, outTime);
+        gainNode.gain.setValueAtTime(0.9, outTime + 0.005);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, outTime + 0.045);
+
+        osc.connect(gainNode);
+        gainNode.connect(compressor);
+
+        osc.start(outTime);
+        osc.stop(outTime + 0.05);
+      }
     }
-    tauBeat += beatIntervalTau;
   }
 
   return await offlineCtx.startRendering();

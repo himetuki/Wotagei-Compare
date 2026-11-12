@@ -3,6 +3,7 @@
  */
 
 import { isWebCodecsSupported } from './exporter.ts';
+import { isDownbeatIndex } from './metronome.ts';
 
 console.log('--- 1. 验证导出时长与确定性时间戳（PTS）计算模型 ---');
 
@@ -82,5 +83,42 @@ if (Math.abs(tauLastSample - clipEnd) > 0.01) {
 
 console.log('--- 4. 验证环境 WebCodecs 探测接口导出 ---');
 console.log('Node 环境下 isWebCodecsSupported():', isWebCodecsSupported(), '(非浏览器环境期望 false)');
+
+console.log('--- 5. 验证离线合成节拍器锚点 (tau = 0) 重拍锁相与时间戳模型 ---');
+const bpmTest = 120;
+const beatIntervalTest = 60 / bpmTest; // 0.5s
+const expStart = -1.0;
+const expEnd = 2.0;
+const rateTest = 0.5;
+
+const kStart = Math.ceil(expStart / beatIntervalTest - 1e-5);
+const kEnd = Math.floor(expEnd / beatIntervalTest + 1e-5);
+
+const generatedBeats: { k: number; tau: number; outTime: number; isDownbeat: boolean }[] = [];
+for (let k = kStart; k <= kEnd; k++) {
+  const tauBeat = k * beatIntervalTest;
+  const outTime = (tauBeat - expStart) / rateTest;
+  generatedBeats.push({
+    k,
+    tau: tauBeat,
+    outTime,
+    isDownbeat: isDownbeatIndex(k),
+  });
+}
+
+console.log(`生成离线节拍序列，共 ${generatedBeats.length} 拍:`);
+const anchorBeat = generatedBeats.find((b) => Math.abs(b.tau) < 1e-5);
+if (!anchorBeat) {
+  throw new Error('离线节拍器序列中缺失 tau = 0 锚点拍！');
+}
+console.log('tau = 0 对应拍号:', anchorBeat.k, '成片时间戳 (s):', anchorBeat.outTime, '是否重拍:', anchorBeat.isDownbeat);
+
+if (anchorBeat.k !== 0 || !anchorBeat.isDownbeat) {
+  throw new Error(`tau = 0 处未被识别为 k=0 重拍！`);
+}
+if (Math.abs(anchorBeat.outTime - 2.0) > 1e-5) {
+  throw new Error(`tau = 0 处成片输出时间偏离预期: 期望 2.0s，实际 ${anchorBeat.outTime}`);
+}
+console.log('✓ 离线节拍器时间戳与锚点重拍锁相验证通过！');
 
 console.log('所有导出核心参数与时间戳模型验证全部通过！');
