@@ -94,6 +94,9 @@ export const ExportPage: React.FC<ExportPageProps> = ({
 
   const previewTauRef = useRef<number>(previewTau);
   previewTauRef.current = previewTau;
+  const hasRenderedRef = useRef<boolean>(false);
+  const pendingSeekTauRef = useRef<number | null>(null);
+  const seekRafIdRef = useRef<number | null>(null);
 
   const drawPreviewFrame = useCallback(() => {
     const v1 = v1Ref.current;
@@ -107,6 +110,12 @@ export const ExportPage: React.FC<ExportPageProps> = ({
     const currentTau = previewTauRef.current;
     const v1Active = isTauInVideoRange(currentTau, timeline.span1);
     const v2Active = isTauInVideoRange(currentTau, timeline.span2);
+
+    const v1Ready = !v1Active || (v1.readyState >= 2 && !v1.seeking);
+    const v2Ready = !v2Active || (v2.readyState >= 2 && !v2.seeking);
+    if (!v1Ready || !v2Ready) {
+      if (hasRenderedRef.current) return;
+    }
 
     const renderState: ComparisonRenderState = {
       mode: initialMode,
@@ -128,6 +137,9 @@ export const ExportPage: React.FC<ExportPageProps> = ({
     };
 
     renderComparisonFrame(ctx, renderState);
+    if ((v1Active && v1.readyState >= 2) || (v2Active && v2.readyState >= 2)) {
+      hasRenderedRef.current = true;
+    }
   }, [
     initialMode,
     initialMirror1,
@@ -159,7 +171,6 @@ export const ExportPage: React.FC<ExportPageProps> = ({
         if (initialSoundSource === 'metronome' && activePlaying) {
           metronomeRef.current.update(nextTau, timelineRef.current.effectiveBpm, true);
         }
-        drawPreviewFrame();
       },
       onPlayingChange: (playing) => {
         setIsPreviewPlaying(playing);
@@ -173,11 +184,80 @@ export const ExportPage: React.FC<ExportPageProps> = ({
       drawPreviewFrame();
     });
 
+    // 建立由 requestAnimationFrame 驱动的预览渲染循环
+    let animId: number;
+    const renderLoop = () => {
+      const v1 = v1Ref.current;
+      const v2 = v2Ref.current;
+      const canvas = previewCanvasRef.current;
+
+      if (v1 && v2 && canvas) {
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          const currentTau = previewTauRef.current;
+          const v1Active = isTauInVideoRange(currentTau, timeline.span1);
+          const v2Active = isTauInVideoRange(currentTau, timeline.span2);
+
+          const v1Ready = !v1Active || (v1.readyState >= 2 && !v1.seeking);
+          const v2Ready = !v2Active || (v2.readyState >= 2 && !v2.seeking);
+
+          if ((v1Ready && v2Ready) || !hasRenderedRef.current) {
+            try {
+              const renderState: ComparisonRenderState = {
+                mode: initialMode,
+                video1: v1,
+                video1Size: { width: video1.width, height: video1.height },
+                video1Active: v1Active,
+                mirror1: initialMirror1,
+                triLine1: video1.geometry.triLine,
+                video2: v2,
+                video2Size: { width: video2.width, height: video2.height },
+                video2Active: v2Active,
+                mirror2: initialMirror2,
+                triLine2: video2.geometry.triLine,
+                triLineTransform,
+                relativeOpacity: initialOpacity,
+                viewport: initialViewport,
+                canvasWidth: canvas.width,
+                canvasHeight: canvas.height,
+              };
+
+              renderComparisonFrame(ctx, renderState);
+              if ((v1Active && v1.readyState >= 2) || (v2Active && v2.readyState >= 2)) {
+                hasRenderedRef.current = true;
+              }
+            } catch {
+              // 容灾捕获：瞬时渲染异常不中断循环
+            }
+          }
+        }
+      }
+
+      animId = requestAnimationFrame(renderLoop);
+    };
+
+    animId = requestAnimationFrame(renderLoop);
+
     return () => {
+      cancelAnimationFrame(animId);
+      if (seekRafIdRef.current !== null) {
+        cancelAnimationFrame(seekRafIdRef.current);
+        seekRafIdRef.current = null;
+      }
       engine.destroy();
       engineRef.current = null;
     };
-  }, []);
+  }, [
+    initialMode,
+    initialMirror1,
+    initialMirror2,
+    initialOpacity,
+    initialViewport,
+    triLineTransform,
+    timeline,
+    video1,
+    video2,
+  ]);
 
   // 当截取区间 A-B 变化时同步更新循环边界
   useEffect(() => {
@@ -189,6 +269,11 @@ export const ExportPage: React.FC<ExportPageProps> = ({
     }
   }, [clipStart, clipEnd, initialSoundSource, timeline.effectiveBpm]);
 
+  const ensureStopped = useCallback(() => {
+    engineRef.current?.pause();
+    setIsPreviewPlaying(false);
+  }, []);
+
   const seekPreview = useCallback(
     (targetTau: number, onComplete?: () => void) => {
       const clampedTau = Math.max(intersectStart, Math.min(intersectEnd, targetTau));
@@ -197,12 +282,32 @@ export const ExportPage: React.FC<ExportPageProps> = ({
       if (initialSoundSource === 'metronome') {
         metronomeRef.current.reset(clampedTau, timeline.effectiveBpm);
       }
-      engineRef.current?.seekToTau(clampedTau, () => {
-        drawPreviewFrame();
-        onComplete?.();
-      });
+      engineRef.current?.seekToTau(
+        clampedTau,
+        () => {
+          drawPreviewFrame();
+          onComplete?.();
+        },
+        false
+      );
     },
     [intersectStart, intersectEnd, initialSoundSource, timeline.effectiveBpm, drawPreviewFrame]
+  );
+
+  const throttledSeek = useCallback(
+    (targetTau: number) => {
+      pendingSeekTauRef.current = targetTau;
+      if (seekRafIdRef.current === null) {
+        seekRafIdRef.current = requestAnimationFrame(() => {
+          seekRafIdRef.current = null;
+          if (pendingSeekTauRef.current !== null) {
+            seekPreview(pendingSeekTauRef.current);
+            pendingSeekTauRef.current = null;
+          }
+        });
+      }
+    },
+    [seekPreview]
   );
 
   // 播放 / 暂停切换 (统一走会合屏障)
@@ -234,8 +339,11 @@ export const ExportPage: React.FC<ExportPageProps> = ({
   const handlePointerDown = (handle: 'A' | 'B', e: React.PointerEvent) => {
     e.stopPropagation();
     e.preventDefault();
+    ensureStopped();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     setDraggingHandle(handle);
+    const targetTau = handle === 'A' ? clipStart : clipEnd;
+    seekPreview(targetTau);
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
@@ -247,25 +355,32 @@ export const ExportPage: React.FC<ExportPageProps> = ({
     if (draggingHandle === 'A') {
       const val = Math.max(intersectStart, Math.min(clipEnd - 0.2, targetTau));
       setClipStart(val);
-      seekPreview(val);
+      throttledSeek(val);
     } else if (draggingHandle === 'B') {
       const val = Math.min(intersectEnd, Math.max(clipStart + 0.2, targetTau));
       setClipEnd(val);
-      seekPreview(val);
+      throttledSeek(val);
     }
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
     if (draggingHandle) {
+      if (seekRafIdRef.current !== null) {
+        cancelAnimationFrame(seekRafIdRef.current);
+        seekRafIdRef.current = null;
+      }
       try {
         (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
       } catch {}
+      const finalTau = draggingHandle === 'A' ? clipStart : clipEnd;
       setDraggingHandle(null);
+      seekPreview(finalTau);
     }
   };
 
   const handleTrackClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!trackRef.current) return;
+    ensureStopped();
     const rect = trackRef.current.getBoundingClientRect();
     const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     const targetTau = intersectStart + ratio * totalIntersectSpan;
@@ -519,7 +634,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
                     className="btn"
                     style={{ height: '20px', padding: '0 6px', fontSize: '10.5px' }}
                     onClick={() => {
-                      if (isPreviewPlaying) togglePreviewPlay();
+                      ensureStopped();
                       const val = Math.min(previewTau, clipEnd - 0.2);
                       setClipStart(val);
                       seekPreview(val);
@@ -535,7 +650,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
                     className="btn"
                     style={{ height: '20px', padding: '0 6px', fontSize: '10.5px' }}
                     onClick={() => {
-                      if (isPreviewPlaying) togglePreviewPlay();
+                      ensureStopped();
                       const val = Math.max(previewTau, clipStart + 0.2);
                       setClipEnd(val);
                       seekPreview(val);

@@ -40,6 +40,7 @@ export class SafeVideoController {
   private element: HTMLVideoElement | null = null;
   public isSeeking: boolean = false;
   public pendingTarget: number | null = null;
+  public pendingDone: (() => void) | null = null;
   public taskEpoch: number = 0;
   private seekedHandler: (() => void) | null = null;
   private metadataHandler: (() => void) | null = null;
@@ -75,6 +76,7 @@ export class SafeVideoController {
   public cancelPending(): void {
     this.cleanupListener();
     this.pendingTarget = null;
+    this.pendingDone = null;
     this.isSeeking = false;
   }
 
@@ -124,19 +126,24 @@ export class SafeVideoController {
 
     if (this.isSeeking || video.seeking) {
       this.pendingTarget = clamped;
+      this.pendingDone = onDone || null;
+      this.taskEpoch = epoch;
       return;
     }
 
     this.isSeeking = true;
     this.pendingTarget = null;
+    this.pendingDone = null;
 
     this.seekedHandler = () => {
       this.cleanupListener();
       this.isSeeking = false;
       if (this.pendingTarget !== null) {
         const next = this.pendingTarget;
+        const nextDone = this.pendingDone;
         this.pendingTarget = null;
-        this.seek(next, onDone, this.taskEpoch);
+        this.pendingDone = null;
+        this.seek(next, nextDone || undefined, this.taskEpoch);
       } else {
         onDone?.();
       }
@@ -380,6 +387,8 @@ export class DualVideoSyncEngine {
     this.isStartingPlay = false;
     this.isPlaying = false;
     this.stopLoop();
+    this.ctrl1.pause();
+    this.ctrl2.pause();
     this.onPlayingChange?.(false);
 
     const intersect = this.timeline.intersectInterval;
