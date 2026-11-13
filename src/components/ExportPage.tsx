@@ -9,7 +9,8 @@ import { renderComparisonFrame, ComparisonRenderState } from '../core/renderer.t
 import { SynthesizedMetronome } from '../core/metronome.ts';
 import { DualVideoSyncEngine } from '../core/sync-engine.ts';
 import type { LoadedVideoItem } from './ImportStep.tsx';
-import { VideoExporter, ExportProgressInfo, isWebCodecsSupported } from '../core/exporter.ts';
+import { VideoExporter, ExportProgressInfo } from '../core/exporter.ts';
+import { isNativeAndroid } from '../core/nativeMedia.ts';
 
 interface ExportPageProps {
   video1: LoadedVideoItem;
@@ -68,10 +69,9 @@ export const ExportPage: React.FC<ExportPageProps> = ({
     statusText: '就绪',
   });
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
-  const [downloadExt, setDownloadExt] = useState<'mp4' | 'webm'>('mp4');
   const [savedNativePath, setSavedNativePath] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const webCodecsSupported = isWebCodecsSupported();
+  const nativeAndroid = isNativeAndroid();
 
   const exporterRef = useRef<VideoExporter | null>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -452,9 +452,10 @@ export const ExportPage: React.FC<ExportPageProps> = ({
 
     try {
       const result = await exporter.export();
-      const url = URL.createObjectURL(result.blob);
-      setDownloadExt(result.fileExtension);
-      setDownloadUrl(url);
+      if (result.blob && !nativeAndroid) {
+        const url = URL.createObjectURL(result.blob);
+        setDownloadUrl(url);
+      }
       if (result.savedPath) {
         setSavedNativePath(result.savedPath);
       }
@@ -529,9 +530,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
           </span>
           <span className="tag-badge">{initialRate}x</span>
           <span className="tag-badge">{soundLabel}</span>
-          <span className="tag-badge">
-            {webCodecsSupported ? '1280×720 · MP4' : '960×540 · WebM'}
-          </span>
+          <span className="tag-badge">1280×720 · MP4</span>
         </div>
       </div>
 
@@ -800,24 +799,6 @@ export const ExportPage: React.FC<ExportPageProps> = ({
                 </div>
               </div>
             </div>
-
-            {!webCodecsSupported && (
-              <div
-                className="export-compat-note"
-                style={{
-                  backgroundColor: 'var(--bg-surface)',
-                  border: '1px solid var(--accent)',
-                  borderRadius: '4px',
-                  padding: '5px 8px',
-                  fontSize: '10.5px',
-                  lineHeight: '1.35',
-                  color: 'var(--text-secondary)',
-                }}
-              >
-                <span style={{ color: 'var(--accent)', fontWeight: 600 }}>兼容模式：</span>
-                当前 WebView 不支持 WebCodecs，将实时录制导出 WebM 视频（耗时约等同成片时长）。
-              </div>
-            )}
           </div>
 
           {/* 固定底部进度与导出按钮区 */}
@@ -865,10 +846,10 @@ export const ExportPage: React.FC<ExportPageProps> = ({
               </div>
             )}
 
-            {downloadUrl && !isExporting && (
+            {downloadUrl && !nativeAndroid && !isExporting && (
               <a
                 href={downloadUrl}
-                download={`wotagei-compare-${Date.now()}.${downloadExt}`}
+                download={`wotagei-compare-${Date.now()}.mp4`}
                 className="btn"
                 style={{
                   height: '28px',
@@ -879,7 +860,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
                 }}
               >
                 <Download size={13} />
-                <span>下载导出文件 (.{downloadExt})</span>
+                <span>下载导出文件 (.mp4)</span>
               </a>
             )}
 

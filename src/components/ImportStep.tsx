@@ -2,11 +2,13 @@ import React, { useRef, useState } from 'react';
 import { Film, Upload, ArrowRight, CheckCircle2, Loader2 } from 'lucide-react';
 import type { VideoGeometryConfig } from '../types/geometry.ts';
 import type { VideoAudioInfo } from '../types/timeline.ts';
-import { decodeAudioFromFile } from '../core/audio.ts';
+import { decodeAudioFromFile, decodeAudioFromNativePcmUrl } from '../core/audio.ts';
+import { NativeMedia, isNativeAndroid } from '../core/nativeMedia.ts';
 
 /** 已载入的单通道视频数据结构 */
 export interface LoadedVideoItem {
-  file: File;
+  file?: File;
+  nativeUri?: string;
   url: string;
   name: string;
   duration: number;
@@ -115,9 +117,143 @@ export const ImportStep: React.FC<ImportStepProps> = ({
   const fileInputRef1 = useRef<HTMLInputElement>(null);
   const fileInputRef2 = useRef<HTMLInputElement>(null);
   const probeHostRef = useRef<HTMLDivElement>(null);
+  const pickingRef = useRef<boolean>(false);
 
   /**
-   * 读取用户选择的本地视频文件
+   * 构造通道默认几何参数
+   */
+  const createDefaultGeometry = (): VideoGeometryConfig => ({
+    mirror: false,
+    triLine: {
+      model: 'two-horizontal-one-vertical',
+      twoHOneV: { yA: 0.22, yB: 0.78, x0: 0.5 },
+      twoVOneH: { xA: 0.38, xB: 0.62, y0: 0.85 },
+    },
+  });
+
+  /**
+   * Android 原生通道选片：获取持久化 content:// URI、本地流式代理地址与流式音轨分析
+   */
+  const handleNativePick = async (index: 1 | 2) => {
+    if (pickingRef.current) return;
+    pickingRef.current = true;
+    try {
+      const picked = await NativeMedia.pickVideo({ channel: index });
+      if (!picked || picked.canceled || !picked.uri || !picked.streamUrl) {
+        return;
+      }
+
+      const url = picked.streamUrl;
+      const dur = picked.duration && picked.duration > 0 ? picked.duration : 10;
+      const baseItem: LoadedVideoItem = {
+        nativeUri: picked.uri,
+        url,
+        name: picked.name || `CH${index}.mp4`,
+        duration: dur,
+        width: picked.width && picked.width > 0 ? picked.width : 1920,
+        height: picked.height && picked.height > 0 ? picked.height : 1080,
+        geometry: createDefaultGeometry(),
+      };
+
+      if (index === 1) {
+        setVideo1(baseItem);
+        onUpdateVideo1?.(baseItem);
+        setLoadingMeta1(false);
+        setLoadingAudio1(true);
+      } else {
+        setVideo2(baseItem);
+        onUpdateVideo2?.(baseItem);
+        setLoadingMeta2(false);
+        setLoadingAudio2(true);
+      }
+
+      try {
+        const audioRes = await NativeMedia.extractAudioAnalysis({ uri: picked.uri });
+        let updatedAudio: VideoAudioInfo;
+
+        if (audioRes.hasAudio && audioRes.pcmUrl) {
+          const decoded = await decodeAudioFromNativePcmUrl(
+            audioRes.pcmUrl,
+            audioRes.sampleRate,
+            audioRes.duration || dur
+          );
+          const finalDur = decoded.duration || dur;
+          updatedAudio = {
+            duration: finalDur,
+            sampleRate: decoded.sampleRate,
+            detectedBpm: decoded.detectedBpm,
+            userBpm: decoded.detectedBpm,
+            anchorTime: Math.min(1.0, finalDur / 4),
+            waveform: decoded.waveform,
+            trimRange: { start: 0, end: finalDur },
+            rawChannelData: decoded.rawChannelData,
+          };
+        } else {
+          updatedAudio = {
+            duration: dur,
+            sampleRate: 16000,
+            detectedBpm: 160,
+            userBpm: 160,
+            anchorTime: Math.min(1.0, dur / 4),
+            waveform: new Float32Array(1000).fill(0.1),
+            trimRange: { start: 0, end: dur },
+            rawChannelData: new Float32Array(0),
+          };
+        }
+
+        if (index === 1) {
+          setVideo1((prev) => {
+            if (!prev || prev.url !== url) return prev;
+            const fullItem = { ...prev, audioInfo: updatedAudio };
+            onUpdateVideo1?.(fullItem);
+            return fullItem;
+          });
+          setLoadingAudio1(false);
+        } else {
+          setVideo2((prev) => {
+            if (!prev || prev.url !== url) return prev;
+            const fullItem = { ...prev, audioInfo: updatedAudio };
+            onUpdateVideo2?.(fullItem);
+            return fullItem;
+          });
+          setLoadingAudio2(false);
+        }
+      } catch {
+        const fallbackAudio: VideoAudioInfo = {
+          duration: dur,
+          sampleRate: 16000,
+          detectedBpm: 160,
+          userBpm: 160,
+          anchorTime: Math.min(1.0, dur / 4),
+          waveform: new Float32Array(1000).fill(0.2),
+          trimRange: { start: 0, end: dur },
+          rawChannelData: new Float32Array(0),
+        };
+        if (index === 1) {
+          setVideo1((prev) => {
+            if (!prev || prev.url !== url) return prev;
+            const fullItem = { ...prev, audioInfo: fallbackAudio };
+            onUpdateVideo1?.(fullItem);
+            return fullItem;
+          });
+          setLoadingAudio1(false);
+        } else {
+          setVideo2((prev) => {
+            if (!prev || prev.url !== url) return prev;
+            const fullItem = { ...prev, audioInfo: fallbackAudio };
+            onUpdateVideo2?.(fullItem);
+            return fullItem;
+          });
+          setLoadingAudio2(false);
+        }
+      }
+    } finally {
+      pickingRef.current = false;
+    }
+  };
+
+  /**
+   * Web 端读取用户选择的本地视频文件
    * 采用「乐观即时挂载 + 异步元数据/音轨并行探测」策略，彻底消除老旧内核卡死与因果倒置
    */
   const handleFileChange = async (
@@ -139,14 +275,7 @@ export const ImportStep: React.FC<ImportStepProps> = ({
       duration: 10,
       width: 1920,
       height: 1080,
-      geometry: {
-        mirror: false,
-        triLine: {
-          model: 'two-horizontal-one-vertical',
-          twoHOneV: { yA: 0.22, yB: 0.78, x0: 0.5 },
-          twoVOneH: { xA: 0.38, xB: 0.62, y0: 0.85 },
-        },
-      },
+      geometry: createDefaultGeometry(),
     };
 
     if (index === 1) {
@@ -269,7 +398,13 @@ export const ImportStep: React.FC<ImportStepProps> = ({
 
     return (
       <div
-        onClick={() => inputRef.current?.click()}
+        onClick={() => {
+          if (isNativeAndroid()) {
+            void handleNativePick(index);
+          } else {
+            inputRef.current?.click();
+          }
+        }}
         className={`slot-card ${loadedClass}`}
       >
         {/* 通道卡片顶栏 */}

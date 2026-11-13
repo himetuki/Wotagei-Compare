@@ -429,6 +429,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
       <video
         ref={videoRef1}
         src={video1.url}
+        crossOrigin="anonymous"
         playsInline
         preload="auto"
         muted
@@ -446,6 +447,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
       <video
         ref={videoRef2}
         src={video2.url}
+        crossOrigin="anonymous"
         playsInline
         preload="auto"
         muted

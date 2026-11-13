@@ -1,11 +1,11 @@
 /**
  * 所见即所得离线逐帧视频导出与音频混流引擎
- * 基于 WebCodecs (VideoEncoder/AudioEncoder) 与 mp4-muxer 构建确定性时间戳离线编码管线
+ * Android 原生端：通过 NativeMediaPlugin 调用 MediaCodec + OpenGL ES + MediaMuxer GPU 零拷贝离线硬编码 MP4
+ * 现代 Web 浏览器端：基于 WebCodecs (VideoEncoder/AudioEncoder) 与 mp4-muxer 执行确定性时间戳离线编码 MP4
  */
 
-import { Filesystem, Directory } from '@capacitor/filesystem';
-import { Capacitor } from '@capacitor/core';
 import { Muxer, ArrayBufferTarget } from 'mp4-muxer';
+import type { PluginListenerHandle } from '@capacitor/core';
 import type {
   ComparisonMode,
   ViewportTransform,
@@ -17,9 +17,13 @@ import type {
 import type { AlignmentTransform } from './geometry.ts';
 import type { UnifiedTimelineResult } from './timeline.ts';
 import { mapTauToSourceTime, isTauInVideoRange } from './timeline.ts';
-import { renderComparisonFrame, ComparisonRenderState } from './renderer.ts';
+import {
+  renderComparisonFrame,
+  computeNativeExportLayout,
+} from './renderer.ts';
+import type { ComparisonRenderState } from './renderer.ts';
 import { isDownbeatIndex } from './metronome.ts';
-import { DualVideoSyncEngine } from './sync-engine.ts';
+import { NativeMedia, isNativeAndroid } from './nativeMedia.ts';
 import type { LoadedVideoItem } from '../components/ImportStep.tsx';
 
 export interface ExportProgressInfo {
@@ -61,56 +65,6 @@ export function isWebCodecsSupported(): boolean {
 }
 
 /**
- * 探测当前运行宿主是否支持 MediaRecorder + canvas.captureStream 兼容录制降级
- */
-export function isMediaRecorderFallbackSupported(): boolean {
-  if (typeof window === 'undefined' || typeof document === 'undefined') return false;
-  if (typeof (window as unknown as { MediaRecorder?: unknown }).MediaRecorder === 'undefined') {
-    return false;
-  }
-  const probeCanvas = document.createElement('canvas') as HTMLCanvasElement & {
-    captureStream?: (fps?: number) => MediaStream;
-  };
-  return typeof probeCanvas.captureStream === 'function';
-}
-
-/**
- * 选择宿主支持的 MediaRecorder 最佳音视频封装 MIME 类型
- */
-export function selectSupportedMediaRecorderMime(
-  hasAudio: boolean,
-  isTypeSupported: (mime: string) => boolean = (mime) =>
-    typeof MediaRecorder !== 'undefined' &&
-    typeof MediaRecorder.isTypeSupported === 'function' &&
-    MediaRecorder.isTypeSupported(mime)
-): string {
-  const candidates = hasAudio
-    ? [
-        'video/webm;codecs=h264,opus',
-        'video/webm;codecs=vp8,opus',
-        'video/webm;codecs=vp9,opus',
-        'video/webm',
-      ]
-    : [
-        'video/webm;codecs=h264',
-        'video/webm;codecs=vp8',
-        'video/webm;codecs=vp9',
-        'video/webm',
-      ];
-
-  for (let i = 0; i < candidates.length; i++) {
-    try {
-      if (isTypeSupported(candidates[i])) {
-        return candidates[i];
-      }
-    } catch {
-      // 尝试下一候选格式
-    }
-  }
-  return '';
-}
-
-/**
  * 寻找宿主环境支持的最佳 H.264 视频编码配置
  */
 async function selectSupportedVideoCodec(width: number, height: number, fps: number): Promise<string> {
@@ -137,7 +91,6 @@ async function selectSupportedVideoCodec(width: number, height: number, fps: num
     }
   }
 
-  // 默认返回兼容性最高的 Baseline
   return 'avc1.42001f';
 }
 
@@ -162,9 +115,7 @@ async function isAacAudioSupported(sampleRate: number): Promise<boolean> {
 }
 
 /**
- * 离线合成节拍器音轨数据 (OfflineAudioContext)
- * 严格以 tau = 0 锁相为小节第 1 拍重拍，采用绝对整数拍号步进消除累加误差，
- * 并应用复合谐波打击音色与动态范围压缩限幅
+ * 离线合成节拍器音轨数据 (OfflineAudioContext，纯 Web 端 WebCodecs 使用)
  */
 export async function synthesizeMetronomeBuffer(
   exportStart: number,
@@ -177,7 +128,6 @@ export async function synthesizeMetronomeBuffer(
   const totalSamples = Math.max(1, Math.round(outputDurationSec * sampleRate));
   const offlineCtx = new OfflineAudioContext(1, totalSamples, sampleRate);
 
-  // 离线动态范围压缩限幅管线：充沛释放响度，母带级砖墙限幅杜绝破音与削顶失真
   const compressor = offlineCtx.createDynamicsCompressor();
   compressor.threshold.setValueAtTime(-1.5, 0);
   compressor.knee.setValueAtTime(3, 0);
@@ -198,7 +148,6 @@ export async function synthesizeMetronomeBuffer(
       const isDownbeat = isDownbeatIndex(k);
 
       if (isDownbeat) {
-        // 重拍：1600Hz 三角波 + 800Hz 正弦波复合冲击 (总长 65ms)
         const oscHigh = offlineCtx.createOscillator();
         const oscLow = offlineCtx.createOscillator();
         const gainNode = offlineCtx.createGain();
@@ -222,7 +171,6 @@ export async function synthesizeMetronomeBuffer(
         oscHigh.stop(outTime + 0.075);
         oscLow.stop(outTime + 0.075);
       } else {
-        // 弱拍：1000Hz 三角波 (总长 50ms)
         const osc = offlineCtx.createOscillator();
         const gainNode = offlineCtx.createGain();
 
@@ -246,7 +194,7 @@ export async function synthesizeMetronomeBuffer(
 }
 
 /**
- * 从源视频 PCM 数据中截取对应时间段并按慢放倍率生成变速离线音轨
+ * 从源视频 PCM 数据中截取对应时间段并按慢放倍率生成变速离线音轨 (纯 Web 端 WebCodecs 使用)
  */
 function createSourceAudioBuffer(
   sourceRawPcm: Float32Array,
@@ -285,7 +233,6 @@ function createSourceAudioBuffer(
       const frac = sourceIndex - indexFloor;
 
       if (indexFloor >= 0 && indexFloor < sourceLength - 1) {
-        // 双点线性插值重采样
         outChannel[i] = sourceRawPcm[indexFloor] * (1 - frac) + sourceRawPcm[indexFloor + 1] * frac;
       } else if (indexFloor >= 0 && indexFloor < sourceLength) {
         outChannel[i] = sourceRawPcm[indexFloor];
@@ -298,52 +245,6 @@ function createSourceAudioBuffer(
   }
 
   return audioBuffer;
-}
-
-/**
- * 将导出完成的二进制 Blob 保存至原生设备文档目录（仅原生平台执行）
- */
-async function saveExportedBlobToNative(
-  blob: Blob,
-  fileExtension: 'mp4' | 'webm'
-): Promise<string | undefined> {
-  if (!Capacitor.isNativePlatform()) {
-    return undefined;
-  }
-  try {
-    const fileName = `wotagei_compare_${Date.now()}.${fileExtension}`;
-    const reader = new FileReader();
-    const base64Data = await new Promise<string>((resolve, reject) => {
-      reader.onloadend = () => {
-        const resultStr = typeof reader.result === 'string' ? reader.result : '';
-        const commaIdx = resultStr.indexOf(',');
-        resolve(commaIdx >= 0 ? resultStr.slice(commaIdx + 1) : resultStr);
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
-
-    try {
-      const res = await Filesystem.writeFile({
-        path: fileName,
-        data: base64Data,
-        directory: Directory.Documents,
-        recursive: true,
-      });
-      return res.uri;
-    } catch {
-      const fallbackRes = await Filesystem.writeFile({
-        path: fileName,
-        data: base64Data,
-        directory: Directory.Data,
-        recursive: true,
-      });
-      return fallbackRes.uri;
-    }
-  } catch (err) {
-    console.warn('原生文件保存失败，降级返回 Blob', err);
-    return undefined;
-  }
 }
 
 export class VideoExporter {
@@ -359,372 +260,34 @@ export class VideoExporter {
    */
   public cancel(): void {
     this.isCancelled = true;
+    if (isNativeAndroid()) {
+      NativeMedia.cancelExport().catch(() => {});
+    }
   }
 
   /**
-   * 导出视频主入口：优先走 WebCodecs 确定性 MP4 离线编码，老旧 WebView 自动降级为 MediaRecorder WebM 录制
+   * 导出视频主入口：
+   * - Android 原生端统一调用原生 MediaCodec + OpenGL ES + MediaMuxer GPU 零拷贝离线硬编码 MP4
+   * - 纯 Web 浏览器端走 WebCodecs 离线编码 MP4
    */
-  public async export(): Promise<{ blob: Blob; savedPath?: string; fileExtension: 'mp4' | 'webm' }> {
+  public async export(): Promise<{ blob?: Blob; savedPath?: string; fileExtension: 'mp4' }> {
+    if (isNativeAndroid()) {
+      return this.exportViaNativePlugin();
+    }
     if (isWebCodecsSupported()) {
       return this.exportViaWebCodecs();
     }
-    if (isMediaRecorderFallbackSupported()) {
-      return this.exportViaMediaRecorder();
-    }
-    throw new Error('当前系统 WebView 既不支持 WebCodecs 也不支持 MediaRecorder，无法导出视频。');
+    throw new Error('当前浏览器不支持 WebCodecs 离线导出，请使用最新版 Chrome 或 Android 原生应用。');
   }
 
   /**
-   * 老旧 WebView（Chrome < 94）兼容录制导出管线：
-   * 复用共享视频源并借助预合成 AudioBuffer + canvas.captureStream + MediaRecorder 导出 WebM
+   * Android 原生全机型 GPU 零拷贝离线 MP4 导出通道
    */
-  private async exportViaMediaRecorder(): Promise<{
-    blob: Blob;
-    savedPath?: string;
-    fileExtension: 'mp4' | 'webm';
+  private async exportViaNativePlugin(): Promise<{
+    blob?: Blob;
+    savedPath: string;
+    fileExtension: 'mp4';
   }> {
-    const {
-      video1,
-      video2,
-      sharedVideo1,
-      sharedVideo2,
-      timeline,
-      mode,
-      mirror1,
-      mirror2,
-      triLineTransform,
-      viewport,
-      relativeOpacity,
-      slowMotionRate,
-      soundSource,
-      fps = 30,
-      onProgress,
-    } = this.config;
-
-    // 为老旧设备选用 960x540 16:9 偶数画幅以保证 30fps 软件编码流畅不掉帧
-    const exportWidth = 960;
-    const exportHeight = 540;
-
-    const exportStart = timeline.intersectInterval.start;
-    const exportEnd = timeline.intersectInterval.end;
-    const exportDuration = Math.max(0.1, exportEnd - exportStart);
-    const outputDurationSec = exportDuration / slowMotionRate;
-    const totalFrames = Math.max(1, Math.round(outputDurationSec * fps));
-
-    onProgress({
-      currentFrame: 0,
-      totalFrames,
-      percent: 0,
-      statusText: '正在准备兼容模式音画合成流...',
-    });
-
-    const canvas = document.createElement('canvas') as HTMLCanvasElement & {
-      captureStream: (frameRate?: number) => MediaStream;
-    };
-    canvas.width = exportWidth;
-    canvas.height = exportHeight;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('无法创建 Canvas 2D 绘图上下文');
-
-    // 1. 预合成节拍器或重采样单侧原声音轨
-    const audioSampleRate = 44100;
-    let audioBuffer: AudioBuffer | null = null;
-    if (soundSource === 'metronome') {
-      audioBuffer = await synthesizeMetronomeBuffer(
-        exportStart,
-        exportEnd,
-        outputDurationSec,
-        timeline.effectiveBpm,
-        slowMotionRate,
-        audioSampleRate
-      );
-    } else if (soundSource === 'video1' || soundSource === 'video2') {
-      const targetVideo = soundSource === 'video1' ? video1 : video2;
-      const anchor =
-        typeof targetVideo.audioInfo?.anchorTime === 'number'
-          ? targetVideo.audioInfo.anchorTime
-          : 1.0;
-      const rate = soundSource === 'video1' ? timeline.rate1 : timeline.rate2;
-      const rawPcm = targetVideo.audioInfo?.rawChannelData;
-      if (rawPcm && rawPcm.length > 0) {
-        audioBuffer = createSourceAudioBuffer(
-          rawPcm,
-          targetVideo.audioInfo?.sampleRate || 44100,
-          exportStart,
-          outputDurationSec,
-          slowMotionRate,
-          anchor,
-          rate,
-          audioSampleRate
-        );
-      }
-    }
-
-    if (this.isCancelled) {
-      throw new Error('用户已取消导出');
-    }
-
-    // 2. 准备视频节点（优先直接复用共享视频，避免老旧设备硬解并发爆表）
-    let ownsTemporaryVideos = false;
-    let recVideo1 = sharedVideo1 || null;
-    let recVideo2 = sharedVideo2 || null;
-
-    if (!recVideo1 || !recVideo2) {
-      ownsTemporaryVideos = true;
-      recVideo1 = document.createElement('video');
-      recVideo1.src = video1.url;
-      recVideo1.muted = true;
-      recVideo1.playsInline = true;
-      recVideo1.preload = 'auto';
-
-      recVideo2 = document.createElement('video');
-      recVideo2.src = video2.url;
-      recVideo2.muted = true;
-      recVideo2.playsInline = true;
-      recVideo2.preload = 'auto';
-
-      await Promise.all([
-        new Promise<void>((r) => {
-          recVideo1!.onloadeddata = () => r();
-          recVideo1!.load();
-        }),
-        new Promise<void>((r) => {
-          recVideo2!.onloadeddata = () => r();
-          recVideo2!.load();
-        }),
-      ]);
-    }
-
-    // 3. 构造音频流与 MediaStream 轨道（只连向 MediaStreamDestination，不从扬声器二次外放）
-    let audioCtx: AudioContext | null = null;
-    let bufferSource: AudioBufferSourceNode | null = null;
-    const tracks: MediaStreamTrack[] = [];
-    const canvasStream = canvas.captureStream(fps);
-    const videoTracks = canvasStream.getVideoTracks();
-    for (let i = 0; i < videoTracks.length; i++) {
-      tracks.push(videoTracks[i]);
-    }
-
-    let hasAudioTrack = false;
-    if (audioBuffer) {
-      try {
-        const AudioCtx =
-          window.AudioContext ||
-          (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-        audioCtx = new AudioCtx();
-        if (audioCtx.state === 'suspended') {
-          await audioCtx.resume().catch(() => {});
-        }
-        const dest = audioCtx.createMediaStreamDestination();
-        bufferSource = audioCtx.createBufferSource();
-        bufferSource.buffer = audioBuffer;
-        bufferSource.connect(dest);
-        const audioTracks = dest.stream.getAudioTracks();
-        for (let i = 0; i < audioTracks.length; i++) {
-          tracks.push(audioTracks[i]);
-        }
-        hasAudioTrack = audioTracks.length > 0;
-      } catch {
-        hasAudioTrack = false;
-      }
-    }
-
-    const combinedStream = new MediaStream(tracks);
-    const chosenMime = selectSupportedMediaRecorderMime(hasAudioTrack);
-    const recorder = chosenMime
-      ? new MediaRecorder(combinedStream, { mimeType: chosenMime, videoBitsPerSecond: 2_500_000 })
-      : new MediaRecorder(combinedStream);
-
-    const chunks: BlobPart[] = [];
-    recorder.ondataavailable = (ev) => {
-      if (ev.data && ev.data.size > 0) {
-        chunks.push(ev.data);
-      }
-    };
-
-    const a1 = typeof video1.audioInfo?.anchorTime === 'number' ? video1.audioInfo.anchorTime : 1.0;
-    const a2 = typeof video2.audioInfo?.anchorTime === 'number' ? video2.audioInfo.anchorTime : 1.0;
-
-    // 辅助函数：把指定 tau 帧画入导出 Canvas
-    const drawAtTau = (tau: number) => {
-      const v1Active = isTauInVideoRange(tau, timeline.span1);
-      const v2Active = isTauInVideoRange(tau, timeline.span2);
-      const renderState: ComparisonRenderState = {
-        mode,
-        video1: recVideo1,
-        video1Size: { width: video1.width, height: video1.height },
-        video1Active: v1Active,
-        mirror1,
-        triLine1: video1.geometry.triLine,
-        video2: recVideo2,
-        video2Size: { width: video2.width, height: video2.height },
-        video2Active: v2Active,
-        mirror2,
-        triLine2: video2.geometry.triLine,
-        triLineTransform,
-        relativeOpacity,
-        viewport,
-        canvasWidth: exportWidth,
-        canvasHeight: exportHeight,
-      };
-      renderComparisonFrame(ctx, renderState);
-    };
-
-    let currentRecTau = exportStart;
-    let finished = false;
-    let rafId: number | null = null;
-
-    // 使用静音模式驱动视频画面，音频由预合成 AudioBufferSourceNode 精准供给 MediaRecorder
-    const recEngine = new DualVideoSyncEngine(recVideo1, recVideo2, {
-      timeline,
-      anchor1: a1,
-      anchor2: a2,
-      soundSource: 'mute',
-      slowMotionRate,
-      loopInterval: { start: exportStart, end: exportEnd + 10 },
-      onTauUpdate: (nextTau) => {
-        currentRecTau = nextTau;
-      },
-    });
-
-    try {
-      // 4. 先同步寻道到起点 A 并绘好首帧，再开始录制
-      await new Promise<void>((resolve) => {
-        recEngine.seekToTau(
-          exportStart,
-          () => {
-            drawAtTau(exportStart);
-            resolve();
-          },
-          false
-        );
-      });
-
-      if (this.isCancelled) {
-        throw new Error('用户已取消导出');
-      }
-
-      const stopPromise = new Promise<void>((resolve) => {
-        recorder.onstop = () => resolve();
-      });
-
-      recorder.start(250);
-      if (bufferSource) {
-        bufferSource.start(0);
-      }
-
-      const startWallMs = performance.now();
-      await recEngine.playFrom(exportStart);
-
-      // 5. 逐帧将当前对齐画面绘入 captureStream 画布直至抵达 B 终点或超时
-      await new Promise<void>((resolve, reject) => {
-        const tick = () => {
-          if (finished) return;
-          if (this.isCancelled) {
-            finished = true;
-            resolve();
-            return;
-          }
-
-          drawAtTau(currentRecTau);
-
-          const elapsedSec = (performance.now() - startWallMs) / 1000;
-          const tauProgress = Math.max(0, (currentRecTau - exportStart) / exportDuration);
-          const timeProgress = Math.max(0, elapsedSec / outputDurationSec);
-          const ratio = Math.min(0.99, Math.max(tauProgress, timeProgress));
-          const percent = Math.round(ratio * 100);
-          const curFrame = Math.min(totalFrames, Math.max(1, Math.round(ratio * totalFrames)));
-
-          onProgress({
-            currentFrame: curFrame,
-            totalFrames,
-            percent,
-            statusText: `兼容录制导出中 (${elapsedSec.toFixed(1)}s / ${outputDurationSec.toFixed(1)}s)...`,
-          });
-
-          if (currentRecTau >= exportEnd - 0.02 || elapsedSec >= outputDurationSec + 0.15) {
-            finished = true;
-            resolve();
-            return;
-          }
-
-          rafId = requestAnimationFrame(tick);
-        };
-
-        try {
-          rafId = requestAnimationFrame(tick);
-        } catch (err) {
-          reject(err);
-        }
-      });
-
-      recEngine.pause();
-      if (bufferSource) {
-        try {
-          bufferSource.stop();
-        } catch {}
-      }
-      if (recorder.state !== 'inactive') {
-        recorder.stop();
-      }
-      await stopPromise;
-
-      if (this.isCancelled) {
-        throw new Error('用户已取消导出');
-      }
-
-      const finalBlob = new Blob(chunks, { type: recorder.mimeType || chosenMime || 'video/webm' });
-      const savedPath = await saveExportedBlobToNative(finalBlob, 'webm');
-
-      onProgress({
-        currentFrame: totalFrames,
-        totalFrames,
-        percent: 100,
-        statusText: '导出完成！',
-      });
-
-      return { blob: finalBlob, savedPath, fileExtension: 'webm' };
-    } finally {
-      finished = true;
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-      }
-      recEngine.destroy();
-      if (bufferSource) {
-        try {
-          bufferSource.disconnect();
-        } catch {}
-      }
-      if (audioCtx && audioCtx.state !== 'closed') {
-        audioCtx.close().catch(() => {});
-      }
-      for (let i = 0; i < tracks.length; i++) {
-        try {
-          tracks[i].stop();
-        } catch {}
-      }
-      if (ownsTemporaryVideos) {
-        if (recVideo1) {
-          recVideo1.removeAttribute('src');
-          recVideo1.load();
-        }
-        if (recVideo2) {
-          recVideo2.removeAttribute('src');
-          recVideo2.load();
-        }
-      }
-    }
-  }
-
-  /**
-   * 执行确定性时间戳离线逐帧渲染与 WebCodecs 硬件加速 MP4 编码
-   */
-  private async exportViaWebCodecs(): Promise<{
-    blob: Blob;
-    savedPath?: string;
-    fileExtension: 'mp4' | 'webm';
-  }> {
-
     const {
       video1,
       video2,
@@ -743,11 +306,135 @@ export class VideoExporter {
       onProgress,
     } = this.config;
 
-    // 1. 规整画幅尺寸为偶数 (H.264 编码器硬性约束)
+    if (!video1.nativeUri || !video2.nativeUri) {
+      throw new Error('缺少原生视频 URI，请重新在导入步骤选择视频');
+    }
+
+    const exportWidth = width % 2 === 0 ? width : width - 1;
+    const exportHeight = height % 2 === 0 ? height : height - 1;
+    const exportStart = timeline.intersectInterval.start;
+    const exportEnd = timeline.intersectInterval.end;
+    const exportDuration = Math.max(0.1, exportEnd - exportStart);
+    const outputDurationSec = exportDuration / slowMotionRate;
+    const totalFrames = Math.max(1, Math.round(outputDurationSec * fps));
+
+    const a1 = typeof video1.audioInfo?.anchorTime === 'number' ? video1.audioInfo.anchorTime : 1.0;
+    const a2 = typeof video2.audioInfo?.anchorTime === 'number' ? video2.audioInfo.anchorTime : 1.0;
+
+    const layout = computeNativeExportLayout({
+      mode,
+      canvasWidth: exportWidth,
+      canvasHeight: exportHeight,
+      video1Uri: video1.nativeUri,
+      video1Size: { width: video1.width, height: video1.height },
+      anchor1: a1,
+      rate1: timeline.rate1,
+      span1Start: timeline.span1.start,
+      span1End: timeline.span1.end,
+      mirror1,
+      triLine1: video1.geometry.triLine,
+      video2Uri: video2.nativeUri,
+      video2Size: { width: video2.width, height: video2.height },
+      anchor2: a2,
+      rate2: timeline.rate2,
+      span2Start: timeline.span2.start,
+      span2End: timeline.span2.end,
+      mirror2,
+      triLine2: video2.geometry.triLine,
+      triLineTransform,
+      relativeOpacity,
+      viewport,
+    });
+
+    onProgress({
+      currentFrame: 0,
+      totalFrames,
+      percent: 0,
+      statusText: '正在启动原生硬件合成管线...',
+    });
+
+    let listenerHandle: PluginListenerHandle | null = null;
+    try {
+      listenerHandle = await NativeMedia.addListener('exportProgress', (ev) => {
+        if (!this.isCancelled) {
+          onProgress({
+            currentFrame: ev.currentFrame,
+            totalFrames: ev.totalFrames,
+            percent: ev.percent,
+            statusText: ev.statusText,
+          });
+        }
+      });
+
+      if (this.isCancelled) {
+        throw new Error('用户已取消导出');
+      }
+
+      const res = await NativeMedia.exportVideo({
+        mode,
+        width: exportWidth,
+        height: exportHeight,
+        fps,
+        exportStartTau: exportStart,
+        exportEndTau: exportEnd,
+        slowMotionRate,
+        effectiveBpm: timeline.effectiveBpm,
+        soundSource,
+        video1: layout.video1,
+        video2: layout.video2,
+      });
+
+      if (this.isCancelled) {
+        throw new Error('用户已取消导出');
+      }
+
+      onProgress({
+        currentFrame: totalFrames,
+        totalFrames,
+        percent: 100,
+        statusText: '导出完成！',
+      });
+
+      return {
+        savedPath: res.savedPath,
+        fileExtension: 'mp4',
+      };
+    } finally {
+      if (listenerHandle) {
+        listenerHandle.remove().catch(() => {});
+      }
+    }
+  }
+
+  /**
+   * 纯 Web 浏览器端确定性时间戳离线逐帧渲染与 WebCodecs 硬件加速 MP4 编码
+   */
+  private async exportViaWebCodecs(): Promise<{
+    blob: Blob;
+    savedPath?: string;
+    fileExtension: 'mp4';
+  }> {
+    const {
+      video1,
+      video2,
+      timeline,
+      mode,
+      mirror1,
+      mirror2,
+      triLineTransform,
+      viewport,
+      relativeOpacity,
+      slowMotionRate,
+      soundSource,
+      fps = 30,
+      width = 1280,
+      height = 720,
+      onProgress,
+    } = this.config;
+
     const exportWidth = width % 2 === 0 ? width : width - 1;
     const exportHeight = height % 2 === 0 ? height : height - 1;
 
-    // 2. 纯数学确定性计算输出时长、总帧数与时间戳
     const exportStart = timeline.intersectInterval.start;
     const exportEnd = timeline.intersectInterval.end;
     const exportDuration = Math.max(0.1, exportEnd - exportStart);
@@ -761,14 +448,12 @@ export class VideoExporter {
       statusText: '正在准备确定性时间戳与硬件编码管道...',
     });
 
-    // 3. 准备离屏 Canvas
     const canvas = document.createElement('canvas');
     canvas.width = exportWidth;
     canvas.height = exportHeight;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) throw new Error('无法创建 Canvas 2D 绘图上下文');
 
-    // 4. 离线合成对应音轨
     const audioSampleRate = 44100;
     let audioBuffer: AudioBuffer | null = null;
     const isAacSupported = await isAacAudioSupported(audioSampleRate);
@@ -814,7 +499,6 @@ export class VideoExporter {
       }
     }
 
-    // 5. 初始化 mp4-muxer 容器封装器与编码器
     const selectedVideoCodec = await selectSupportedVideoCodec(exportWidth, exportHeight, fps);
 
     const muxer = new Muxer({
@@ -868,7 +552,6 @@ export class VideoExporter {
         bitrate: 128_000,
       });
 
-      // 将离线音频缓冲切片送入音频编码器
       const channelData = audioBuffer.getChannelData(0);
       const totalAudioFrames = channelData.length;
       const audioChunkSize = 1024;
@@ -901,7 +584,6 @@ export class VideoExporter {
       audioEncoder.close();
     }
 
-    // 6. 准备两路离屏视频元素进行离散寻道
     const offVideo1 = document.createElement('video');
     offVideo1.src = video1.url;
     offVideo1.muted = true;
@@ -942,7 +624,6 @@ export class VideoExporter {
     const a1 = typeof video1.audioInfo?.anchorTime === 'number' ? video1.audioInfo.anchorTime : 1.0;
     const a2 = typeof video2.audioInfo?.anchorTime === 'number' ? video2.audioInfo.anchorTime : 1.0;
 
-    // 7. 离散步进帧循环：确定性时间戳驱动
     const frameDurationMicros = Math.round((1 / fps) * 1_000_000);
 
     for (let frame = 0; frame < totalFrames; frame++) {
@@ -955,7 +636,6 @@ export class VideoExporter {
         throw videoEncoderError;
       }
 
-      // 计算当前帧在统一时间轴上的真实瞬态 tau
       const currentTau = exportStart + (frame / fps) * slowMotionRate;
       const t1 = mapTauToSourceTime(currentTau, a1, timeline.rate1);
       const t2 = mapTauToSourceTime(currentTau, a2, timeline.rate2);
@@ -963,7 +643,6 @@ export class VideoExporter {
       const v1Active = isTauInVideoRange(currentTau, timeline.span1);
       const v2Active = isTauInVideoRange(currentTau, timeline.span2);
 
-      // 仅当在各自有效范围内时执行异步寻道解码
       const seeks: Promise<void>[] = [];
       if (v1Active) seeks.push(seekVideo(offVideo1, t1));
       if (v2Active) seeks.push(seekVideo(offVideo2, t2));
@@ -971,7 +650,6 @@ export class VideoExporter {
         await Promise.all(seeks);
       }
 
-      // 单帧几何与透明度合成绘制
       const renderState: ComparisonRenderState = {
         mode,
         video1: offVideo1,
@@ -993,7 +671,6 @@ export class VideoExporter {
 
       renderComparisonFrame(ctx, renderState);
 
-      // 包装带确定性微秒时间戳的 VideoFrame 并送入编码器
       const timestampMicros = Math.round((frame / fps) * 1_000_000);
       const videoFrame = new VideoFrame(canvas, {
         timestamp: timestampMicros,
@@ -1002,11 +679,8 @@ export class VideoExporter {
 
       const isKeyFrame = frame % (fps * 2) === 0;
       videoEncoder.encode(videoFrame, { keyFrame: isKeyFrame });
-
-      // 必须立即显式释放 VideoFrame GPU 纹理显存，杜绝移动端内存溢出
       videoFrame.close();
 
-      // 每 10 帧让出微任务循环并更新 UI 进度
       if (frame % 10 === 0 || frame === totalFrames - 1) {
         const percent = Math.round(((frame + 1) / totalFrames) * 100);
         onProgress({
@@ -1019,7 +693,6 @@ export class VideoExporter {
       }
     }
 
-    // 8. 冲刷并关闭视频编码器，完成 MP4 封装
     await videoEncoder.flush();
     videoEncoder.close();
 
@@ -1027,14 +700,10 @@ export class VideoExporter {
     const finalBuffer = muxer.target.buffer;
     const finalBlob = new Blob([finalBuffer], { type: 'video/mp4' });
 
-    // 释放离屏视频解码器，避免内存驻留
     offVideo1.removeAttribute('src');
     offVideo1.load();
     offVideo2.removeAttribute('src');
     offVideo2.load();
-
-    // 9. Android 原生环境持久化写入
-    const savedPath = await saveExportedBlobToNative(finalBlob, 'mp4');
 
     onProgress({
       currentFrame: totalFrames,
@@ -1043,6 +712,6 @@ export class VideoExporter {
       statusText: '导出完成！',
     });
 
-    return { blob: finalBlob, savedPath, fileExtension: 'mp4' };
+    return { blob: finalBlob, fileExtension: 'mp4' };
   }
 }

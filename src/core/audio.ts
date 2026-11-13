@@ -49,10 +49,18 @@ export function calculateTempoPriorWeight(bpm: number): number {
 }
 
 /**
+ * 按音频采样率自适应计算约 11.6ms 的能量包络 Hop 步长（44100Hz 时恒为 512）
+ */
+export function getAudioHopSize(sampleRate: number): number {
+  if (!sampleRate || sampleRate <= 0) return 512;
+  return Math.max(128, Math.round((512 * sampleRate) / 44100));
+}
+
+/**
  * 基于能量包络、先验衰减加权与谐波共振校验自动测算音轨 BPM
  * 适用于流行乐、电子乐与动漫歌曲 (WOTA 艺常用 120 ~ 220 BPM)
  * @param channelData 单声道 Float32 PCM 数据
- * @param sampleRate 采样率 (如 44100 或 48000)
+ * @param sampleRate 采样率 (如 44100、48000 或原生流式降采样 16000)
  * @param maxScanSeconds 最大分析时长（秒，默认无限制；导入超长大音频时建议传 60）
  * @returns 测算出的整数 BPM
  */
@@ -66,8 +74,8 @@ export function detectBpmFromPcm(
     return 160;
   }
 
-  // 1. 降低时间分辨率计算局部能量包络 (每步长 512 采样点，约 11.6ms)
-  const hopSize = 512;
+  // 1. 降低时间分辨率计算局部能量包络 (每步长约 11.6ms)
+  const hopSize = getAudioHopSize(sampleRate);
   const envelopeLength = Math.floor(channelData.length / hopSize);
   const envelope = new Float32Array(envelopeLength);
 
@@ -205,10 +213,10 @@ export function detectBpmFromSlice(
   const validStart = Math.max(0, Math.min(startSec, endSec));
   const validEnd = Math.max(startSec, endSec);
 
-  // 严格按 hopSize (512) 整数倍将截取采样点对齐到全局 Hop 网格
-  // 确保不管用户如何毫秒级微调起止点，局部切片内的鼓点瞬态（Transient）相对于 512 样本块边界的相位绝对固定
+  // 严格按 hopSize 整数倍将截取采样点对齐到全局 Hop 网格
+  // 确保不管用户如何毫秒级微调起止点，局部切片内的鼓点瞬态（Transient）相对于块边界的相位绝对固定
   // 彻底根除鼓点冲击被切块边界削顶切分导致的能量泄漏与跳变
-  const hopSize = 512;
+  const hopSize = getAudioHopSize(sampleRate);
   const alignedStart = Math.max(0, Math.floor((validStart * sampleRate) / hopSize) * hopSize);
   const alignedEnd = Math.min(pcm.length, Math.ceil((validEnd * sampleRate) / hopSize) * hopSize);
 
@@ -337,6 +345,45 @@ export async function decodeAudioFromFile(file: File): Promise<{
     detectedBpm,
     waveform,
     rawChannelData: monoData,
+  };
+}
+
+/**
+ * 从 Android 原生本地流式代理拉取降采样后的 Int16 小端 PCM 数据并完成波形与 BPM 分析
+ */
+export async function decodeAudioFromNativePcmUrl(
+  pcmUrl: string,
+  sampleRate: number,
+  durationSec: number
+): Promise<{
+  duration: number;
+  sampleRate: number;
+  detectedBpm: number;
+  waveform: Float32Array;
+  rawChannelData: Float32Array;
+}> {
+  const response = await fetch(pcmUrl);
+  if (!response.ok) {
+    throw new Error('原生音频 PCM 读取失败: HTTP ' + response.status);
+  }
+  const buffer = await response.arrayBuffer();
+  const int16 = new Int16Array(buffer);
+  const float32 = new Float32Array(int16.length);
+  for (let i = 0; i < int16.length; i++) {
+    float32[i] = int16[i] / 32768.0;
+  }
+
+  const effectiveRate = sampleRate > 0 ? sampleRate : 16000;
+  const effectiveDuration = durationSec > 0 ? durationSec : float32.length / effectiveRate;
+  const detectedBpm = detectBpmFromPcm(float32, effectiveRate, 60);
+  const waveform = extractAudioWaveform(float32, 1000);
+
+  return {
+    duration: effectiveDuration,
+    sampleRate: effectiveRate,
+    detectedBpm,
+    waveform,
+    rawChannelData: float32,
   };
 }
 

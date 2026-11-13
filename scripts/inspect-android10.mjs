@@ -184,20 +184,25 @@ async function run() {
   );
   assert(init.tabGap > 0, 'Chrome 74 下顶部步骤按钮间距仍为 0px');
 
-  // 5. 导入两段测试 MP4
-  const doc = await call('DOM.getDocument', { depth: -1 });
-  const inputs = await call('DOM.querySelectorAll', {
-    nodeId: doc.root.nodeId,
-    selector: 'input[type="file"]',
-  });
-  assert(inputs.nodeIds.length >= 2, '未找到双通道文件选择框');
+  // 5. 通过 Android 原生视频选择器导入两段测试 MP4（不再走 input[type=file]）
+  const pickFromNativeDialog = async (cardIndex, fileName) => {
+    await evalJs(`document.querySelectorAll('.slot-card')[${cardIndex}].click()`);
+    await new Promise((r) => setTimeout(r, 1500));
+    const xml = adb('shell "uiautomator dump /sdcard/ui.xml && cat /sdcard/ui.xml"');
+    const re = new RegExp(`text="${fileName}"[^>]*bounds="\\[(\\d+),(\\d+)\\]\\[(\\d+),(\\d+)\\]"`);
+    const m = xml.match(re);
+    assert(Boolean(m), `原生文档选择器中未找到 ${fileName}`);
+    const tapX = Math.round((Number(m[1]) + Number(m[3])) / 2);
+    const tapY = Math.round((Number(m[2]) + Number(m[4])) / 2);
+    adb(`shell input tap ${tapX} ${tapY}`);
+    await new Promise((r) => setTimeout(r, 1200));
+  };
 
-  await call('DOM.setFileInputFiles', { nodeId: inputs.nodeIds[0], files: ['/sdcard/Movies/test_ch1.mp4'] });
-  await new Promise((r) => setTimeout(r, 600));
-  await call('DOM.setFileInputFiles', { nodeId: inputs.nodeIds[1], files: ['/sdcard/Movies/test_ch2.mp4'] });
+  await pickFromNativeDialog(0, 'test_ch1.mp4');
+  await pickFromNativeDialog(1, 'test_ch2.mp4');
 
   let importReady = false;
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < 20; i++) {
     await new Promise((r) => setTimeout(r, 500));
     const st = await evalJs(`(() => {
       const btn = document.querySelector('.import-stage button');
@@ -363,7 +368,14 @@ async function run() {
   assert(overlayNonBlack, '无法切换至叠加模式');
   await new Promise((r) => setTimeout(r, 400));
 
-  // 9. 导出片段页：验证共享仅 2 路 <video>、400ms 内预览画布立即可见、并跑通 MediaRecorder WebM 导出
+  // 切换到 0.2x 慢放，随后在导出片段页验证 Android 原生 GPU 离线高速导出 .mp4
+  await evalJs(`(() => {
+    const rateBtn = Array.from(document.querySelectorAll('.seg-btn')).find(b => b.innerText.trim() === '0.2x');
+    if (rateBtn) rateBtn.click();
+  })()`);
+  await new Promise((r) => setTimeout(r, 300));
+
+  // 9. 导出片段页：验证共享仅 2 路 <video>、400ms 内预览画布立即可见、并跑通原生 GPU 离线 MP4 导出
   await clickStep('导出片段', 400);
   const expQuick = await evalJs(`(() => {
     const grid = document.querySelector('.export-grid');
@@ -385,6 +397,7 @@ async function run() {
       bottomPad: cs ? parseFloat(cs.paddingBottom) : 0,
       videoCount: videos.length,
       nonBlack,
+      hasCompatNote: !!document.querySelector('.export-compat-note'),
       crashOverlay: !!document.getElementById('wotagei-crash-overlay')
     };
   })()`);
@@ -392,41 +405,21 @@ async function run() {
   assert(expQuick.leftPad > 0 && expQuick.rightPad > 0 && expQuick.bottomPad > 0, 'export-grid 边距塌陷为 0');
   assert(expQuick.videoCount === 2, `导出页并发 <video> 应为 2，实际为 ${expQuick.videoCount}`);
   assert(expQuick.nonBlack > 1000, `导出页 400ms 内预览画布仍黑屏 (nonBlack=${expQuick.nonBlack})`);
+  assert(!expQuick.hasCompatNote, 'Android 原生平台不应再出现兼容实时录制 WebM 提示');
   assert(!expQuick.crashOverlay, '导出页触发崩溃面板');
   screencap('android10_07_export');
 
-  // 将出口区间缩短为约 1.2s 并触发 Chrome 74 MediaRecorder 兼容导出实测
+  // 触发原生 GPU 0.2x 慢放全区间离线 MP4 导出并计时
   const exportStarted = await evalJs(`(() => {
-    const slider = document.querySelector('.export-grid input[type="range"]');
-    const setABtn = Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes('设当前为 A'));
     const exportBtn = Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes('开始渲染导出'));
-    if (setABtn) {
-      // 直接在区间后半段设 A，得到 ~1s 短区间加快巡检导出实测
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-      if (slider && setter) {
-        const targetVal = Math.max(parseFloat(slider.min), parseFloat(slider.max) - 1.2);
-        setter.call(slider, String(targetVal));
-        slider.dispatchEvent(new Event('input', { bubbles: true }));
-        slider.dispatchEvent(new Event('change', { bubbles: true }));
-      }
-    }
+    if (exportBtn) exportBtn.click();
     return !!exportBtn;
   })()`);
   assert(exportStarted, '未找到导出按钮');
-  await new Promise((r) => setTimeout(r, 300));
-  await evalJs(`(() => {
-    const setABtn = Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes('设当前为 A'));
-    if (setABtn) setABtn.click();
-  })()`);
-  await new Promise((r) => setTimeout(r, 300));
-  await evalJs(`(() => {
-    const exportBtn = Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes('开始渲染导出'));
-    if (exportBtn) exportBtn.click();
-  })()`);
 
-  // 等待 MediaRecorder 兼容导出完成（最多 15s）
+  const exportT0 = Date.now();
   let exportResult = null;
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 90; i++) {
     await new Promise((r) => setTimeout(r, 500));
     const st = await evalJs(`(() => {
       const dl = document.querySelector('a[download]');
@@ -434,8 +427,6 @@ async function run() {
       const savedEl = Array.from(document.querySelectorAll('.mono-num')).find(el => el.innerText && el.innerText.includes('已保存:'));
       return {
         hasDownload: !!dl,
-        downloadName: dl ? dl.getAttribute('download') : null,
-        href: dl ? dl.getAttribute('href') : null,
         savedText: savedEl ? savedEl.innerText : null,
         errText: err ? err.innerText : null
       };
@@ -443,15 +434,16 @@ async function run() {
     if (st.errText) {
       throw new Error('导出流程界面报错: ' + st.errText);
     }
-    if (st.hasDownload) {
+    if (st.savedText) {
       exportResult = st;
       break;
     }
   }
-  console.log('6. Chrome 74 MediaRecorder 兼容导出实测:', JSON.stringify(exportResult));
-  assert(Boolean(exportResult && exportResult.hasDownload), 'Chrome 74 兼容导出超时未生成下载文件');
-  assert(exportResult.downloadName.endsWith('.webm'), '老版本兼容导出文件名应为 .webm');
-  assert(Boolean(exportResult.savedText && exportResult.savedText.includes('.webm')), 'Android 10 原生导出未成功写入本地文件');
+  const exportElapsedMs = Date.now() - exportT0;
+  console.log('6. Android 原生 GPU 离线 MP4 导出实测:', JSON.stringify({ ...exportResult, exportElapsedMs }));
+  assert(Boolean(exportResult && exportResult.savedText && exportResult.savedText.includes('.mp4')), 'Android 原生导出未生成 .mp4 相册文件');
+  assert(!exportResult.hasDownload, 'Android 原生端不应渲染无效 blob: 下载按钮');
+  assert(exportElapsedMs < 25000, `0.2x 慢放 30s 成片原生离线导出耗时过长: ${exportElapsedMs}ms`);
 
   // 10. 零运行时异常与零控制台错误
   assert(exceptions.length === 0, `存在未捕获 JS 异常: ${JSON.stringify(exceptions)}`);

@@ -266,6 +266,7 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
           <video
             ref={videoRef}
             src={videoItem.url}
+            crossOrigin="anonymous"
             preload="auto"
             style={{
               width: '100%',

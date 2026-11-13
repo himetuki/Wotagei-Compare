@@ -516,6 +516,7 @@ export const AudioStep: React.FC<AudioStepProps> = ({
         <video
           ref={videoRef}
           src={videoItem.url}
+          crossOrigin="anonymous"
           preload="auto"
           onPlay={() => setIsPlaying(true)}
           onPause={() => setIsPlaying(false)}

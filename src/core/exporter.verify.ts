@@ -2,8 +2,9 @@
  * 离线导出时间戳数学模型、总帧数与音频重采样参数离线校验
  */
 
-import { isWebCodecsSupported, selectSupportedMediaRecorderMime } from './exporter.ts';
+import { isWebCodecsSupported } from './exporter.ts';
 import { isDownbeatIndex } from './metronome.ts';
+import { computeNativeExportLayout } from './renderer.ts';
 
 console.log('--- 1. 验证导出时长与确定性时间戳（PTS）计算模型 ---');
 
@@ -81,14 +82,34 @@ if (Math.abs(tauLastSample - clipEnd) > 0.01) {
   throw new Error('音频末采样点时间偏移未对齐');
 }
 
-console.log('--- 4. 验证环境 WebCodecs 与 MediaRecorder 降级 MIME 选择接口 ---');
+console.log('--- 4. 验证环境 WebCodecs 与原生导出归一化布局参数化接口 ---');
 console.log('Node 环境下 isWebCodecsSupported():', isWebCodecsSupported(), '(非浏览器环境期望 false)');
-const pickedMime = selectSupportedMediaRecorderMime(
-  true,
-  (m) => m === 'video/webm;codecs=vp8,opus' || m === 'video/webm'
-);
-if (pickedMime !== 'video/webm;codecs=vp8,opus') {
-  throw new Error('MediaRecorder 优先 MIME 选择错误: ' + pickedMime);
+const splitLayout = computeNativeExportLayout({
+  mode: 'split-screen',
+  canvasWidth: 1280,
+  canvasHeight: 720,
+  video1Uri: 'content://v1',
+  video1Size: { width: 1080, height: 1920 },
+  anchor1: 1.0,
+  rate1: 1.0,
+  span1Start: -1,
+  span1End: 5,
+  mirror1: true,
+  video2Uri: 'content://v2',
+  video2Size: { width: 1280, height: 720 },
+  anchor2: 1.0,
+  rate2: 1.0,
+  span2Start: -1,
+  span2End: 5,
+  mirror2: false,
+  relativeOpacity: 0,
+  viewport: { scale: 1, offsetX: 0, offsetY: 0 },
+});
+if (Math.abs(splitLayout.video1.clipRect.w - 0.5) > 1e-6 || Math.abs(splitLayout.video2.clipRect.x - 0.5) > 1e-6) {
+  throw new Error('分区导出归一化裁剪矩形错误');
+}
+if (!splitLayout.video1.bgRect) {
+  throw new Error('竖屏窄视频左半屏应生成铺底衬底 bgRect');
 }
 
 console.log('--- 5. 验证离线合成节拍器锚点 (tau = 0) 重拍锁相与时间戳模型 ---');

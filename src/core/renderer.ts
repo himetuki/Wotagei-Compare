@@ -13,6 +13,7 @@ import {
   calculateTriLineSplitScreenPlacement,
 } from './geometry.ts';
 import type { AlignmentTransform } from './geometry.ts';
+import type { NativeVideoLayerLayout, NormalizedRect } from './nativeMedia.ts';
 
 export interface ComparisonRenderState {
   mode: ComparisonMode;
@@ -293,4 +294,199 @@ function renderOverlay(
   }
 
   ctx.restore();
+}
+
+export interface NativeExportLayoutInput {
+  mode: ComparisonMode;
+  canvasWidth: number;
+  canvasHeight: number;
+  video1Uri: string;
+  video1Size: { width: number; height: number };
+  anchor1: number;
+  rate1: number;
+  span1Start: number;
+  span1End: number;
+  mirror1: boolean;
+  triLine1?: TriLineCalibration;
+  video2Uri: string;
+  video2Size: { width: number; height: number };
+  anchor2: number;
+  rate2: number;
+  span2Start: number;
+  span2End: number;
+  mirror2: boolean;
+  triLine2?: TriLineCalibration;
+  triLineTransform?: AlignmentTransform;
+  relativeOpacity: number;
+  viewport: ViewportTransform;
+}
+
+/**
+ * 计算与 Canvas 渲染器像素级等价的归一化布局参数，供 Android 原生 OpenGL ES 合成直接消费
+ */
+export function computeNativeExportLayout(input: NativeExportLayoutInput): {
+  video1: NativeVideoLayerLayout;
+  video2: NativeVideoLayerLayout;
+} {
+  const W = Math.max(2, input.canvasWidth);
+  const H = Math.max(2, input.canvasHeight);
+
+  const defaultTriLine: TriLineCalibration = {
+    model: 'two-horizontal-one-vertical',
+    twoHOneV: { yA: 0.28, yB: 0.82, x0: 0.5 },
+    twoVOneH: { xA: 0.4, xB: 0.6, y0: 0.85 },
+  };
+
+  if (input.mode === 'split-screen') {
+    const halfW = W / 2;
+
+    // 左半屏 CH1
+    const calib1 = input.triLine1 || defaultTriLine;
+    const fit1 = calculateTriLineSplitScreenPlacement(
+      calib1,
+      input.video1Size,
+      { width: halfW, height: H },
+      'left'
+    );
+    const localX1 = input.mirror1 ? halfW - fit1.dx - fit1.targetWidth : fit1.dx;
+    const mainRect1: NormalizedRect = {
+      x: localX1 / W,
+      y: fit1.dy / H,
+      w: fit1.targetWidth / W,
+      h: fit1.targetHeight / H,
+    };
+
+    let bgRect1: NormalizedRect | undefined;
+    if (fit1.targetWidth < halfW && input.video1Size.width > 0 && input.video1Size.height > 0) {
+      const coverScale = Math.max(halfW / input.video1Size.width, H / input.video1Size.height);
+      const bgW = input.video1Size.width * coverScale;
+      const bgH = input.video1Size.height * coverScale;
+      const bgX = (halfW - bgW) / 2;
+      const bgY = (H - bgH) / 2;
+      bgRect1 = { x: bgX / W, y: bgY / H, w: bgW / W, h: bgH / H };
+    }
+
+    // 右半屏 CH2
+    const calib2 = input.triLine2 || defaultTriLine;
+    const fit2 = calculateTriLineSplitScreenPlacement(
+      calib2,
+      input.video2Size,
+      { width: halfW, height: H },
+      'right'
+    );
+    const localX2 = input.mirror2 ? halfW - fit2.dx - fit2.targetWidth : fit2.dx;
+    const mainRect2: NormalizedRect = {
+      x: (halfW + localX2) / W,
+      y: fit2.dy / H,
+      w: fit2.targetWidth / W,
+      h: fit2.targetHeight / H,
+    };
+
+    let bgRect2: NormalizedRect | undefined;
+    if (fit2.targetWidth < halfW && input.video2Size.width > 0 && input.video2Size.height > 0) {
+      const coverScale = Math.max(halfW / input.video2Size.width, H / input.video2Size.height);
+      const bgW = input.video2Size.width * coverScale;
+      const bgH = input.video2Size.height * coverScale;
+      const bgX = (halfW - bgW) / 2;
+      const bgY = (H - bgH) / 2;
+      bgRect2 = { x: (halfW + bgX) / W, y: bgY / H, w: bgW / W, h: bgH / H };
+    }
+
+    return {
+      video1: {
+        uri: input.video1Uri,
+        anchorTime: input.anchor1,
+        rate: input.rate1,
+        spanStart: input.span1Start,
+        spanEnd: input.span1End,
+        mirror: input.mirror1,
+        alpha: 1,
+        clipRect: { x: 0, y: 0, w: 0.5, h: 1 },
+        mainRect: mainRect1,
+        bgRect: bgRect1,
+        bgAlpha: bgRect1 ? 0.35 : undefined,
+      },
+      video2: {
+        uri: input.video2Uri,
+        anchorTime: input.anchor2,
+        rate: input.rate2,
+        spanStart: input.span2Start,
+        spanEnd: input.span2End,
+        mirror: input.mirror2,
+        alpha: 1,
+        clipRect: { x: 0.5, y: 0, w: 0.5, h: 1 },
+        mainRect: mainRect2,
+        bgRect: bgRect2,
+        bgAlpha: bgRect2 ? 0.35 : undefined,
+      },
+    };
+  }
+
+  // 半透明叠加模式
+  const transform = input.triLineTransform;
+  if (!transform) {
+    return {
+      video1: {
+        uri: input.video1Uri,
+        anchorTime: input.anchor1,
+        rate: input.rate1,
+        spanStart: input.span1Start,
+        spanEnd: input.span1End,
+        mirror: input.mirror1,
+        alpha: 1,
+        clipRect: { x: 0, y: 0, w: 1, h: 1 },
+        mainRect: { x: 0, y: 0, w: 1, h: 1 },
+      },
+      video2: {
+        uri: input.video2Uri,
+        anchorTime: input.anchor2,
+        rate: input.rate2,
+        spanStart: input.span2Start,
+        spanEnd: input.span2End,
+        mirror: input.mirror2,
+        alpha: Math.max(0, Math.min(1, (1 + input.relativeOpacity) / 2)),
+        clipRect: { x: 0, y: 0, w: 1, h: 1 },
+        mainRect: { x: 0, y: 0, w: 1, h: 1 },
+      },
+    };
+  }
+
+  const fit = calculateFitTransform(transform.unionBounds, { width: W, height: H });
+  const totalScale = input.viewport.scale * fit.scale;
+  const originX = W / 2 + input.viewport.scale * (fit.offsetX - W / 2 + input.viewport.offsetX);
+  const originY = H / 2 + input.viewport.scale * (fit.offsetY - H / 2 + input.viewport.offsetY);
+
+  const v1W = totalScale * input.video1Size.width;
+  const v1H = totalScale * input.video1Size.height;
+
+  const v2X = originX + totalScale * transform.translateX;
+  const v2Y = originY + totalScale * transform.translateY;
+  const v2W = totalScale * transform.scale * input.video2Size.width;
+  const v2H = totalScale * transform.scale * input.video2Size.height;
+  const topAlpha = Math.max(0, Math.min(1, (1 + input.relativeOpacity) / 2));
+
+  return {
+    video1: {
+      uri: input.video1Uri,
+      anchorTime: input.anchor1,
+      rate: input.rate1,
+      spanStart: input.span1Start,
+      spanEnd: input.span1End,
+      mirror: input.mirror1,
+      alpha: 1,
+      clipRect: { x: 0, y: 0, w: 1, h: 1 },
+      mainRect: { x: originX / W, y: originY / H, w: v1W / W, h: v1H / H },
+    },
+    video2: {
+      uri: input.video2Uri,
+      anchorTime: input.anchor2,
+      rate: input.rate2,
+      spanStart: input.span2Start,
+      spanEnd: input.span2End,
+      mirror: input.mirror2,
+      alpha: topAlpha,
+      clipRect: { x: 0, y: 0, w: 1, h: 1 },
+      mainRect: { x: v2X / W, y: v2Y / H, w: v2W / W, h: v2H / H },
+    },
+  };
 }
