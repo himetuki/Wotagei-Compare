@@ -249,7 +249,8 @@ export const ImportStep: React.FC<ImportStepProps> = ({
       }
     })();
 
-    await Promise.allSettled([metaPromise, audioPromise]);
+    // 两条异步探测均已在内部自消化异常，此处使用 ES2015 Promise.all 即可兼容全系 WebView
+    await Promise.all([metaPromise, audioPromise]);
   };
 
   /**

@@ -420,6 +420,7 @@ body,
   overflow: hidden;
   min-height: 0;
   touch-action: none;
+  padding: 0 12px;
   padding: 0 max(12px, var(--safe-right)) 0 max(12px, var(--safe-left));
 }
 
