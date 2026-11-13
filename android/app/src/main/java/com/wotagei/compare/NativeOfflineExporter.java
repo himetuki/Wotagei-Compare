@@ -844,8 +844,11 @@ public class NativeOfflineExporter {
         return 4.0 * Math.abs(phase - 0.5) - 1.0;
     }
 
-    private static double mapTauToSourceTime(double tau, double anchorTime, double rate) {
-        return anchorTime + tau / rate;
+    /**
+     * 将统一时间轴偏移 tau 换算为源视频绝对时间戳 (与 src/core/timeline.ts 严格同构)
+     */
+    static double mapTauToSourceTime(double tau, double anchorTime, double rate) {
+        return anchorTime + tau * rate;
     }
 
     private static String saveToPublicMovies(Context context, File tempMp4) throws IOException {
