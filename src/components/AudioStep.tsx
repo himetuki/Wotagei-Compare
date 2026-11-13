@@ -79,6 +79,21 @@ export const AudioStep: React.FC<AudioStepProps> = ({
 
   const tapTrackerRef = useRef<TapTempoTracker>(new TapTempoTracker());
   const [tapActive, setTapActive] = useState<boolean>(false);
+  const auditionAudioCtxRef = useRef<AudioContext | null>(null);
+  const auditionTimerRef = useRef<number | null>(null);
+
+  // 组件卸载时释放试听计时器与 AudioContext，防止上下文配额泄漏
+  useEffect(() => {
+    return () => {
+      if (auditionTimerRef.current) {
+        window.clearTimeout(auditionTimerRef.current);
+      }
+      if (auditionAudioCtxRef.current && auditionAudioCtxRef.current.state !== 'closed') {
+        auditionAudioCtxRef.current.close().catch(() => {});
+        auditionAudioCtxRef.current = null;
+      }
+    };
+  }, []);
 
   // 切换视频通道时同步恢复对应通道的音频与时间截取配置
   useEffect(() => {
@@ -97,9 +112,28 @@ export const AudioStep: React.FC<AudioStepProps> = ({
     setTrimStart(nextTrimStart);
     setTrimEnd(nextTrimEnd);
     setIsPlaying(false);
-    if (videoRef.current) {
-      videoRef.current.currentTime = nextAnchor;
+    const video = videoRef.current;
+    if (!video) return;
+
+    // 元数据尚未就绪（readyState === 0）时直接赋值 currentTime 会被老旧 WebView 静默忽略，
+    // 因此同步监听 loadedmetadata 并在就绪后立即寻道至当前对拍锚点帧
+    const seekToAnchor = () => {
+      if (video.readyState >= 1) {
+        const safeDur = video.duration > 0 ? video.duration : nextTrimEnd;
+        const clamped = Math.max(0, Math.min(safeDur, nextAnchor));
+        const target = clamped > 0 ? clamped : Math.min(0.01, safeDur / 2);
+        video.currentTime = target;
+      }
+    };
+
+    video.addEventListener('loadedmetadata', seekToAnchor);
+    if (video.readyState >= 1) {
+      seekToAnchor();
     }
+
+    return () => {
+      video.removeEventListener('loadedmetadata', seekToAnchor);
+    };
   }, [videoItem.url, videoIndex, videoItem.duration]);
 
   /**
@@ -316,10 +350,30 @@ export const AudioStep: React.FC<AudioStepProps> = ({
 
   /**
    * 从锚点前 0.6s 预跑试听并在锚点时刻触发脉冲卡拍音
+   * 复用单个 AudioContext 并在用户点击手势内同步唤醒，避免连续试听触发 Chromium 6 上下文上限
    */
   const jumpToAnchor = () => {
     const video = videoRef.current;
     if (!video) return;
+
+    // 在点击手势同步栈内惰性创建或唤醒 AudioContext
+    let ctx = auditionAudioCtxRef.current;
+    try {
+      if (!ctx || ctx.state === 'closed') {
+        const AudioCtx =
+          window.AudioContext ||
+          (window as unknown as { webkitAudioContext: typeof AudioContext })
+            .webkitAudioContext;
+        ctx = new AudioCtx();
+        auditionAudioCtxRef.current = ctx;
+      }
+      if (ctx.state === 'suspended') {
+        ctx.resume().catch(() => {});
+      }
+    } catch {
+      ctx = null;
+    }
+
     const preRoll = Math.max(0, anchorTime - 0.6);
     video.currentTime = preRoll;
     setCurrentTime(preRoll);
@@ -328,23 +382,24 @@ export const AudioStep: React.FC<AudioStepProps> = ({
     video.play().catch(() => {});
     setIsPlaying(true);
 
-    const delayMs = (anchorTime - preRoll) * 1000;
-    setTimeout(() => {
+    if (auditionTimerRef.current) {
+      window.clearTimeout(auditionTimerRef.current);
+    }
+
+    const delayMs = Math.max(0, (anchorTime - preRoll) * 1000);
+    auditionTimerRef.current = window.setTimeout(() => {
       try {
-        const AudioCtx =
-          window.AudioContext ||
-          (window as unknown as { webkitAudioContext: typeof AudioContext })
-            .webkitAudioContext;
-        const ctx = new AudioCtx();
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.frequency.setValueAtTime(1200, ctx.currentTime);
-        gain.gain.setValueAtTime(0.8, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.04);
+        const activeCtx = auditionAudioCtxRef.current;
+        if (!activeCtx || activeCtx.state === 'closed') return;
+        const osc = activeCtx.createOscillator();
+        const gain = activeCtx.createGain();
+        osc.frequency.setValueAtTime(1200, activeCtx.currentTime);
+        gain.gain.setValueAtTime(0.8, activeCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, activeCtx.currentTime + 0.04);
         osc.connect(gain);
-        gain.connect(ctx.destination);
+        gain.connect(activeCtx.destination);
         osc.start();
-        osc.stop(ctx.currentTime + 0.04);
+        osc.stop(activeCtx.currentTime + 0.04);
       } catch {
         // 音频上下文受限时忽略
       }
@@ -461,6 +516,7 @@ export const AudioStep: React.FC<AudioStepProps> = ({
         <video
           ref={videoRef}
           src={videoItem.url}
+          preload="auto"
           onPlay={() => setIsPlaying(true)}
           onPause={() => setIsPlaying(false)}
           style={{
@@ -474,7 +530,7 @@ export const AudioStep: React.FC<AudioStepProps> = ({
       </div>
 
       {/* 底部波形与对拍控制面板 */}
-      <div className="bottom-bar" style={{ gap: '8px' }}>
+      <div className="bottom-bar fx-col-8">
         <div
           ref={waveformContainerRef}
           onPointerMove={handlePointerMove}
@@ -648,32 +704,38 @@ export const AudioStep: React.FC<AudioStepProps> = ({
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+        <div
+          className="audio-controls-row fx-row-8"
+          style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
+        >
           {/* 左：播放、当前时间 */}
-          <div className="control-group" style={{ gap: '6px' }}>
+          <div className="control-group">
             <button type="button" onClick={togglePlay} className="btn" style={{ padding: '0 8px' }}>
               {isPlaying ? <Pause size={13} /> : <Play size={13} />}
               <span>{isPlaying ? '暂停' : '播放'}</span>
             </button>
 
-            <span className="mono-num" style={{ minWidth: '60px', fontSize: '11.5px', textAlign: 'center' }}>
+            <span
+              className="mono-num audio-time-readout"
+              style={{ minWidth: '60px', fontSize: '11.5px', textAlign: 'center' }}
+            >
               {currentTime.toFixed(3)}s
             </span>
           </div>
 
           {/* 中：设为锚点、直接输入锚点数值、试听锚点 */}
-          <div className="control-group" style={{ gap: '6px' }}>
+          <div className="control-group">
             <button type="button" onClick={setAsAnchor} className="btn btn-accent" style={{ padding: '0 9px' }}>
               <Crosshair size={13} />
               <span>设为锚点</span>
             </button>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-              <span className="mono-muted" style={{ fontSize: '11px' }}>锚点</span>
+            <div className="fx-row-4" style={{ display: 'flex', alignItems: 'center' }}>
+              <span className="mono-muted" style={{ fontSize: '11px', whiteSpace: 'nowrap' }}>锚点</span>
               <input
                 type="number"
                 step="0.001"
-                className="num-input"
+                className="num-input audio-anchor-input"
                 value={anchorInputText}
                 onChange={(e) => {
                   setAnchorInputText(e.target.value);
@@ -703,12 +765,12 @@ export const AudioStep: React.FC<AudioStepProps> = ({
             </button>
 
             <span className="mono-muted" style={{ fontSize: '11px', whiteSpace: 'nowrap' }}>
-              招式 {(trimEnd - trimStart).toFixed(1)}s
+              <span className="audio-trim-prefix">招式 </span>{(trimEnd - trimStart).toFixed(1)}s
             </span>
           </div>
 
           {/* 右：单一真实源 TAP 测速与 BPM 调节区 */}
-          <div className="control-group" style={{ gap: '4px', flexShrink: 0 }}>
+          <div className="control-group fx-row-4" style={{ flexShrink: 0 }}>
             <button
               type="button"
               onClick={handleTap}
@@ -730,7 +792,7 @@ export const AudioStep: React.FC<AudioStepProps> = ({
             </button>
             <input
               type="number"
-              className="num-input"
+              className="num-input audio-bpm-input"
               value={bpm}
               onChange={(e) => {
                 const val = Math.max(1, parseInt(e.target.value, 10) || 160);

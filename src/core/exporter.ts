@@ -19,6 +19,7 @@ import type { UnifiedTimelineResult } from './timeline.ts';
 import { mapTauToSourceTime, isTauInVideoRange } from './timeline.ts';
 import { renderComparisonFrame, ComparisonRenderState } from './renderer.ts';
 import { isDownbeatIndex } from './metronome.ts';
+import { DualVideoSyncEngine } from './sync-engine.ts';
 import type { LoadedVideoItem } from '../components/ImportStep.tsx';
 
 export interface ExportProgressInfo {
@@ -31,6 +32,8 @@ export interface ExportProgressInfo {
 export interface ExporterConfig {
   video1: LoadedVideoItem;
   video2: LoadedVideoItem;
+  sharedVideo1?: HTMLVideoElement | null;
+  sharedVideo2?: HTMLVideoElement | null;
   timeline: UnifiedTimelineResult;
   mode: ComparisonMode;
   mirror1: boolean;
@@ -55,6 +58,56 @@ export function isWebCodecsSupported(): boolean {
     typeof (window as unknown as { VideoEncoder?: unknown }).VideoEncoder !== 'undefined' &&
     typeof (window as unknown as { VideoFrame?: unknown }).VideoFrame !== 'undefined'
   );
+}
+
+/**
+ * 探测当前运行宿主是否支持 MediaRecorder + canvas.captureStream 兼容录制降级
+ */
+export function isMediaRecorderFallbackSupported(): boolean {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return false;
+  if (typeof (window as unknown as { MediaRecorder?: unknown }).MediaRecorder === 'undefined') {
+    return false;
+  }
+  const probeCanvas = document.createElement('canvas') as HTMLCanvasElement & {
+    captureStream?: (fps?: number) => MediaStream;
+  };
+  return typeof probeCanvas.captureStream === 'function';
+}
+
+/**
+ * 选择宿主支持的 MediaRecorder 最佳音视频封装 MIME 类型
+ */
+export function selectSupportedMediaRecorderMime(
+  hasAudio: boolean,
+  isTypeSupported: (mime: string) => boolean = (mime) =>
+    typeof MediaRecorder !== 'undefined' &&
+    typeof MediaRecorder.isTypeSupported === 'function' &&
+    MediaRecorder.isTypeSupported(mime)
+): string {
+  const candidates = hasAudio
+    ? [
+        'video/webm;codecs=h264,opus',
+        'video/webm;codecs=vp8,opus',
+        'video/webm;codecs=vp9,opus',
+        'video/webm',
+      ]
+    : [
+        'video/webm;codecs=h264',
+        'video/webm;codecs=vp8',
+        'video/webm;codecs=vp9',
+        'video/webm',
+      ];
+
+  for (let i = 0; i < candidates.length; i++) {
+    try {
+      if (isTypeSupported(candidates[i])) {
+        return candidates[i];
+      }
+    } catch {
+      // 尝试下一候选格式
+    }
+  }
+  return '';
 }
 
 /**
@@ -206,8 +259,17 @@ function createSourceAudioBuffer(
   targetSampleRate: number
 ): AudioBuffer {
   const totalSamples = Math.max(1, Math.round(outputDurationSec * targetSampleRate));
-  const audioCtx = new AudioContext({ sampleRate: targetSampleRate });
-  const audioBuffer = audioCtx.createBuffer(1, totalSamples, targetSampleRate);
+  let audioBuffer: AudioBuffer;
+  if (typeof AudioBuffer === 'function') {
+    audioBuffer = new AudioBuffer({
+      length: totalSamples,
+      numberOfChannels: 1,
+      sampleRate: targetSampleRate,
+    });
+  } else {
+    const offline = new OfflineAudioContext(1, totalSamples, targetSampleRate);
+    audioBuffer = offline.createBuffer(1, totalSamples, targetSampleRate);
+  }
   const outChannel = audioBuffer.getChannelData(0);
 
   const sourceLength = sourceRawPcm.length;
@@ -235,8 +297,53 @@ function createSourceAudioBuffer(
     }
   }
 
-  audioCtx.close().catch(() => {});
   return audioBuffer;
+}
+
+/**
+ * 将导出完成的二进制 Blob 保存至原生设备文档目录（仅原生平台执行）
+ */
+async function saveExportedBlobToNative(
+  blob: Blob,
+  fileExtension: 'mp4' | 'webm'
+): Promise<string | undefined> {
+  if (!Capacitor.isNativePlatform()) {
+    return undefined;
+  }
+  try {
+    const fileName = `wotagei_compare_${Date.now()}.${fileExtension}`;
+    const reader = new FileReader();
+    const base64Data = await new Promise<string>((resolve, reject) => {
+      reader.onloadend = () => {
+        const resultStr = typeof reader.result === 'string' ? reader.result : '';
+        const commaIdx = resultStr.indexOf(',');
+        resolve(commaIdx >= 0 ? resultStr.slice(commaIdx + 1) : resultStr);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+
+    try {
+      const res = await Filesystem.writeFile({
+        path: fileName,
+        data: base64Data,
+        directory: Directory.Documents,
+        recursive: true,
+      });
+      return res.uri;
+    } catch {
+      const fallbackRes = await Filesystem.writeFile({
+        path: fileName,
+        data: base64Data,
+        directory: Directory.Data,
+        recursive: true,
+      });
+      return fallbackRes.uri;
+    }
+  } catch (err) {
+    console.warn('原生文件保存失败，降级返回 Blob', err);
+    return undefined;
+  }
 }
 
 export class VideoExporter {
@@ -255,14 +362,368 @@ export class VideoExporter {
   }
 
   /**
+   * 导出视频主入口：优先走 WebCodecs 确定性 MP4 离线编码，老旧 WebView 自动降级为 MediaRecorder WebM 录制
+   */
+  public async export(): Promise<{ blob: Blob; savedPath?: string; fileExtension: 'mp4' | 'webm' }> {
+    if (isWebCodecsSupported()) {
+      return this.exportViaWebCodecs();
+    }
+    if (isMediaRecorderFallbackSupported()) {
+      return this.exportViaMediaRecorder();
+    }
+    throw new Error('当前系统 WebView 既不支持 WebCodecs 也不支持 MediaRecorder，无法导出视频。');
+  }
+
+  /**
+   * 老旧 WebView（Chrome < 94）兼容录制导出管线：
+   * 复用共享视频源并借助预合成 AudioBuffer + canvas.captureStream + MediaRecorder 导出 WebM
+   */
+  private async exportViaMediaRecorder(): Promise<{
+    blob: Blob;
+    savedPath?: string;
+    fileExtension: 'mp4' | 'webm';
+  }> {
+    const {
+      video1,
+      video2,
+      sharedVideo1,
+      sharedVideo2,
+      timeline,
+      mode,
+      mirror1,
+      mirror2,
+      triLineTransform,
+      viewport,
+      relativeOpacity,
+      slowMotionRate,
+      soundSource,
+      fps = 30,
+      onProgress,
+    } = this.config;
+
+    // 为老旧设备选用 960x540 16:9 偶数画幅以保证 30fps 软件编码流畅不掉帧
+    const exportWidth = 960;
+    const exportHeight = 540;
+
+    const exportStart = timeline.intersectInterval.start;
+    const exportEnd = timeline.intersectInterval.end;
+    const exportDuration = Math.max(0.1, exportEnd - exportStart);
+    const outputDurationSec = exportDuration / slowMotionRate;
+    const totalFrames = Math.max(1, Math.round(outputDurationSec * fps));
+
+    onProgress({
+      currentFrame: 0,
+      totalFrames,
+      percent: 0,
+      statusText: '正在准备兼容模式音画合成流...',
+    });
+
+    const canvas = document.createElement('canvas') as HTMLCanvasElement & {
+      captureStream: (frameRate?: number) => MediaStream;
+    };
+    canvas.width = exportWidth;
+    canvas.height = exportHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('无法创建 Canvas 2D 绘图上下文');
+
+    // 1. 预合成节拍器或重采样单侧原声音轨
+    const audioSampleRate = 44100;
+    let audioBuffer: AudioBuffer | null = null;
+    if (soundSource === 'metronome') {
+      audioBuffer = await synthesizeMetronomeBuffer(
+        exportStart,
+        exportEnd,
+        outputDurationSec,
+        timeline.effectiveBpm,
+        slowMotionRate,
+        audioSampleRate
+      );
+    } else if (soundSource === 'video1' || soundSource === 'video2') {
+      const targetVideo = soundSource === 'video1' ? video1 : video2;
+      const anchor =
+        typeof targetVideo.audioInfo?.anchorTime === 'number'
+          ? targetVideo.audioInfo.anchorTime
+          : 1.0;
+      const rate = soundSource === 'video1' ? timeline.rate1 : timeline.rate2;
+      const rawPcm = targetVideo.audioInfo?.rawChannelData;
+      if (rawPcm && rawPcm.length > 0) {
+        audioBuffer = createSourceAudioBuffer(
+          rawPcm,
+          targetVideo.audioInfo?.sampleRate || 44100,
+          exportStart,
+          outputDurationSec,
+          slowMotionRate,
+          anchor,
+          rate,
+          audioSampleRate
+        );
+      }
+    }
+
+    if (this.isCancelled) {
+      throw new Error('用户已取消导出');
+    }
+
+    // 2. 准备视频节点（优先直接复用共享视频，避免老旧设备硬解并发爆表）
+    let ownsTemporaryVideos = false;
+    let recVideo1 = sharedVideo1 || null;
+    let recVideo2 = sharedVideo2 || null;
+
+    if (!recVideo1 || !recVideo2) {
+      ownsTemporaryVideos = true;
+      recVideo1 = document.createElement('video');
+      recVideo1.src = video1.url;
+      recVideo1.muted = true;
+      recVideo1.playsInline = true;
+      recVideo1.preload = 'auto';
+
+      recVideo2 = document.createElement('video');
+      recVideo2.src = video2.url;
+      recVideo2.muted = true;
+      recVideo2.playsInline = true;
+      recVideo2.preload = 'auto';
+
+      await Promise.all([
+        new Promise<void>((r) => {
+          recVideo1!.onloadeddata = () => r();
+          recVideo1!.load();
+        }),
+        new Promise<void>((r) => {
+          recVideo2!.onloadeddata = () => r();
+          recVideo2!.load();
+        }),
+      ]);
+    }
+
+    // 3. 构造音频流与 MediaStream 轨道（只连向 MediaStreamDestination，不从扬声器二次外放）
+    let audioCtx: AudioContext | null = null;
+    let bufferSource: AudioBufferSourceNode | null = null;
+    const tracks: MediaStreamTrack[] = [];
+    const canvasStream = canvas.captureStream(fps);
+    const videoTracks = canvasStream.getVideoTracks();
+    for (let i = 0; i < videoTracks.length; i++) {
+      tracks.push(videoTracks[i]);
+    }
+
+    let hasAudioTrack = false;
+    if (audioBuffer) {
+      try {
+        const AudioCtx =
+          window.AudioContext ||
+          (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+        audioCtx = new AudioCtx();
+        if (audioCtx.state === 'suspended') {
+          await audioCtx.resume().catch(() => {});
+        }
+        const dest = audioCtx.createMediaStreamDestination();
+        bufferSource = audioCtx.createBufferSource();
+        bufferSource.buffer = audioBuffer;
+        bufferSource.connect(dest);
+        const audioTracks = dest.stream.getAudioTracks();
+        for (let i = 0; i < audioTracks.length; i++) {
+          tracks.push(audioTracks[i]);
+        }
+        hasAudioTrack = audioTracks.length > 0;
+      } catch {
+        hasAudioTrack = false;
+      }
+    }
+
+    const combinedStream = new MediaStream(tracks);
+    const chosenMime = selectSupportedMediaRecorderMime(hasAudioTrack);
+    const recorder = chosenMime
+      ? new MediaRecorder(combinedStream, { mimeType: chosenMime, videoBitsPerSecond: 2_500_000 })
+      : new MediaRecorder(combinedStream);
+
+    const chunks: BlobPart[] = [];
+    recorder.ondataavailable = (ev) => {
+      if (ev.data && ev.data.size > 0) {
+        chunks.push(ev.data);
+      }
+    };
+
+    const a1 = typeof video1.audioInfo?.anchorTime === 'number' ? video1.audioInfo.anchorTime : 1.0;
+    const a2 = typeof video2.audioInfo?.anchorTime === 'number' ? video2.audioInfo.anchorTime : 1.0;
+
+    // 辅助函数：把指定 tau 帧画入导出 Canvas
+    const drawAtTau = (tau: number) => {
+      const v1Active = isTauInVideoRange(tau, timeline.span1);
+      const v2Active = isTauInVideoRange(tau, timeline.span2);
+      const renderState: ComparisonRenderState = {
+        mode,
+        video1: recVideo1,
+        video1Size: { width: video1.width, height: video1.height },
+        video1Active: v1Active,
+        mirror1,
+        triLine1: video1.geometry.triLine,
+        video2: recVideo2,
+        video2Size: { width: video2.width, height: video2.height },
+        video2Active: v2Active,
+        mirror2,
+        triLine2: video2.geometry.triLine,
+        triLineTransform,
+        relativeOpacity,
+        viewport,
+        canvasWidth: exportWidth,
+        canvasHeight: exportHeight,
+      };
+      renderComparisonFrame(ctx, renderState);
+    };
+
+    let currentRecTau = exportStart;
+    let finished = false;
+    let rafId: number | null = null;
+
+    // 使用静音模式驱动视频画面，音频由预合成 AudioBufferSourceNode 精准供给 MediaRecorder
+    const recEngine = new DualVideoSyncEngine(recVideo1, recVideo2, {
+      timeline,
+      anchor1: a1,
+      anchor2: a2,
+      soundSource: 'mute',
+      slowMotionRate,
+      loopInterval: { start: exportStart, end: exportEnd + 10 },
+      onTauUpdate: (nextTau) => {
+        currentRecTau = nextTau;
+      },
+    });
+
+    try {
+      // 4. 先同步寻道到起点 A 并绘好首帧，再开始录制
+      await new Promise<void>((resolve) => {
+        recEngine.seekToTau(
+          exportStart,
+          () => {
+            drawAtTau(exportStart);
+            resolve();
+          },
+          false
+        );
+      });
+
+      if (this.isCancelled) {
+        throw new Error('用户已取消导出');
+      }
+
+      const stopPromise = new Promise<void>((resolve) => {
+        recorder.onstop = () => resolve();
+      });
+
+      recorder.start(250);
+      if (bufferSource) {
+        bufferSource.start(0);
+      }
+
+      const startWallMs = performance.now();
+      await recEngine.playFrom(exportStart);
+
+      // 5. 逐帧将当前对齐画面绘入 captureStream 画布直至抵达 B 终点或超时
+      await new Promise<void>((resolve, reject) => {
+        const tick = () => {
+          if (finished) return;
+          if (this.isCancelled) {
+            finished = true;
+            resolve();
+            return;
+          }
+
+          drawAtTau(currentRecTau);
+
+          const elapsedSec = (performance.now() - startWallMs) / 1000;
+          const tauProgress = Math.max(0, (currentRecTau - exportStart) / exportDuration);
+          const timeProgress = Math.max(0, elapsedSec / outputDurationSec);
+          const ratio = Math.min(0.99, Math.max(tauProgress, timeProgress));
+          const percent = Math.round(ratio * 100);
+          const curFrame = Math.min(totalFrames, Math.max(1, Math.round(ratio * totalFrames)));
+
+          onProgress({
+            currentFrame: curFrame,
+            totalFrames,
+            percent,
+            statusText: `兼容录制导出中 (${elapsedSec.toFixed(1)}s / ${outputDurationSec.toFixed(1)}s)...`,
+          });
+
+          if (currentRecTau >= exportEnd - 0.02 || elapsedSec >= outputDurationSec + 0.15) {
+            finished = true;
+            resolve();
+            return;
+          }
+
+          rafId = requestAnimationFrame(tick);
+        };
+
+        try {
+          rafId = requestAnimationFrame(tick);
+        } catch (err) {
+          reject(err);
+        }
+      });
+
+      recEngine.pause();
+      if (bufferSource) {
+        try {
+          bufferSource.stop();
+        } catch {}
+      }
+      if (recorder.state !== 'inactive') {
+        recorder.stop();
+      }
+      await stopPromise;
+
+      if (this.isCancelled) {
+        throw new Error('用户已取消导出');
+      }
+
+      const finalBlob = new Blob(chunks, { type: recorder.mimeType || chosenMime || 'video/webm' });
+      const savedPath = await saveExportedBlobToNative(finalBlob, 'webm');
+
+      onProgress({
+        currentFrame: totalFrames,
+        totalFrames,
+        percent: 100,
+        statusText: '导出完成！',
+      });
+
+      return { blob: finalBlob, savedPath, fileExtension: 'webm' };
+    } finally {
+      finished = true;
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+      recEngine.destroy();
+      if (bufferSource) {
+        try {
+          bufferSource.disconnect();
+        } catch {}
+      }
+      if (audioCtx && audioCtx.state !== 'closed') {
+        audioCtx.close().catch(() => {});
+      }
+      for (let i = 0; i < tracks.length; i++) {
+        try {
+          tracks[i].stop();
+        } catch {}
+      }
+      if (ownsTemporaryVideos) {
+        if (recVideo1) {
+          recVideo1.removeAttribute('src');
+          recVideo1.load();
+        }
+        if (recVideo2) {
+          recVideo2.removeAttribute('src');
+          recVideo2.load();
+        }
+      }
+    }
+  }
+
+  /**
    * 执行确定性时间戳离线逐帧渲染与 WebCodecs 硬件加速 MP4 编码
    */
-  public async export(): Promise<{ blob: Blob; savedPath?: string }> {
-    if (!isWebCodecsSupported()) {
-      throw new Error(
-        '当前运行环境不支持 WebCodecs 原生硬件视频编码器，请使用最新 Chrome/Edge 浏览器或在 Android 系统更新 WebView。'
-      );
-    }
+  private async exportViaWebCodecs(): Promise<{
+    blob: Blob;
+    savedPath?: string;
+    fileExtension: 'mp4' | 'webm';
+  }> {
 
     const {
       video1,
@@ -566,31 +1027,14 @@ export class VideoExporter {
     const finalBuffer = muxer.target.buffer;
     const finalBlob = new Blob([finalBuffer], { type: 'video/mp4' });
 
-    // 9. Android 原生环境持久化写入相册
-    let savedPath: string | undefined;
-    if (Capacitor.isNativePlatform()) {
-      try {
-        const fileName = `wotagei_compare_${Date.now()}.mp4`;
-        const reader = new FileReader();
-        const base64Data = await new Promise<string>((resolve, reject) => {
-          reader.onloadend = () => {
-            const base64 = (reader.result as string).split(',')[1];
-            resolve(base64);
-          };
-          reader.onerror = reject;
-          reader.readAsDataURL(finalBlob);
-        });
+    // 释放离屏视频解码器，避免内存驻留
+    offVideo1.removeAttribute('src');
+    offVideo1.load();
+    offVideo2.removeAttribute('src');
+    offVideo2.load();
 
-        const res = await Filesystem.writeFile({
-          path: fileName,
-          data: base64Data,
-          directory: Directory.Documents,
-        });
-        savedPath = res.uri;
-      } catch (err) {
-        console.warn('原生相册保存失败，降级返回 Blob', err);
-      }
-    }
+    // 9. Android 原生环境持久化写入
+    const savedPath = await saveExportedBlobToNative(finalBlob, 'mp4');
 
     onProgress({
       currentFrame: totalFrames,
@@ -599,6 +1043,6 @@ export class VideoExporter {
       statusText: '导出完成！',
     });
 
-    return { blob: finalBlob, savedPath };
+    return { blob: finalBlob, savedPath, fileExtension: 'mp4' };
   }
 }

@@ -56,7 +56,7 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
     setIsPlaying(false);
   }, [videoItem.url, videoIndex]);
 
-  // 监听舞台容器尺寸以计算视频精确内接矩形
+  // 监听舞台容器尺寸以计算视频精确内接矩形（缺少 ResizeObserver 的老旧 WebView 降级至 window.resize）
   useEffect(() => {
     const el = stageRef.current;
     if (!el) return;
@@ -67,22 +67,45 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
       }
     };
     updateSize();
-    const observer = new ResizeObserver(updateSize);
-    observer.observe(el);
-    return () => observer.disconnect();
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(updateSize);
+      observer.observe(el);
+      return () => observer.disconnect();
+    }
+    window.addEventListener('resize', updateSize);
+    return () => window.removeEventListener('resize', updateSize);
   }, []);
 
-  // 监听视频播放时间更新
+  // 监听视频播放时间更新与元数据就绪首帧渲染
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
+
+    // 老旧 Android WebView 在 currentTime=0 且未播放时默认展示系统灰色播放占位图标，
+    // 元数据就绪后轻寻道至极小非零首帧时间点以强制绘制真实视频首帧
+    const seekFirstFrame = () => {
+      if (video.currentTime === 0 && video.readyState >= 1) {
+        const target = Math.min(0.01, (video.duration || 1) / 2);
+        if (target > 0) {
+          video.currentTime = target;
+        }
+      }
+    };
+
     const onTimeUpdate = () => setCurrentTime(video.currentTime);
     const onPause = () => setIsPlaying(false);
     const onPlay = () => setIsPlaying(true);
+    video.addEventListener('loadedmetadata', seekFirstFrame);
     video.addEventListener('timeupdate', onTimeUpdate);
     video.addEventListener('pause', onPause);
     video.addEventListener('play', onPlay);
+
+    if (video.readyState >= 1) {
+      seekFirstFrame();
+    }
+
     return () => {
+      video.removeEventListener('loadedmetadata', seekFirstFrame);
       video.removeEventListener('timeupdate', onTimeUpdate);
       video.removeEventListener('pause', onPause);
       video.removeEventListener('play', onPlay);
@@ -189,8 +212,28 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
     commitGeometry(mirror, nextTwoHOneV, nextTwoVOneH);
   };
 
-  const handlePointerUp = () => {
+  /**
+   * 释放三线指针捕获状态
+   */
+  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    try {
+      const target = e.target as HTMLElement;
+      if (target && typeof target.releasePointerCapture === 'function') {
+        target.releasePointerCapture(e.pointerId);
+      }
+    } catch {}
     setDraggingTarget(null);
+  };
+
+  /**
+   * 按下三线标尺时捕获指针，防止移动端快速划出线体区域导致断触
+   */
+  const startDragLine = (targetKey: string, e: React.PointerEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {}
+    setDraggingTarget(targetKey);
   };
 
   // 计算视频在舞台内的精确内接矩形尺寸
@@ -223,6 +266,7 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
           <video
             ref={videoRef}
             src={videoItem.url}
+            preload="auto"
             style={{
               width: '100%',
               height: '100%',
@@ -244,10 +288,7 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
                     '--line-color': '#f59e0b',
                   } as React.CSSProperties
                 }
-                onPointerDown={(e) => {
-                  e.stopPropagation();
-                  setDraggingTarget('yA');
-                }}
+                onPointerDown={(e) => startDragLine('yA', e)}
               >
                 <span
                   className="calib-tag"
@@ -272,10 +313,7 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
                     '--line-color': '#10b981',
                   } as React.CSSProperties
                 }
-                onPointerDown={(e) => {
-                  e.stopPropagation();
-                  setDraggingTarget('yB');
-                }}
+                onPointerDown={(e) => startDragLine('yB', e)}
               >
                 <span
                   className="calib-tag"
@@ -300,10 +338,7 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
                     '--line-color': '#38bdf8',
                   } as React.CSSProperties
                 }
-                onPointerDown={(e) => {
-                  e.stopPropagation();
-                  setDraggingTarget('x0');
-                }}
+                onPointerDown={(e) => startDragLine('x0', e)}
               >
                 <span
                   className="calib-tag"
@@ -331,10 +366,7 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
                     '--line-color': '#38bdf8',
                   } as React.CSSProperties
                 }
-                onPointerDown={(e) => {
-                  e.stopPropagation();
-                  setDraggingTarget('xA');
-                }}
+                onPointerDown={(e) => startDragLine('xA', e)}
               >
                 <span
                   className="calib-tag"
@@ -360,10 +392,7 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
                     '--line-color': '#f59e0b',
                   } as React.CSSProperties
                 }
-                onPointerDown={(e) => {
-                  e.stopPropagation();
-                  setDraggingTarget('xB');
-                }}
+                onPointerDown={(e) => startDragLine('xB', e)}
               >
                 <span
                   className="calib-tag"
@@ -389,10 +418,7 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
                     '--line-color': '#10b981',
                   } as React.CSSProperties
                 }
-                onPointerDown={(e) => {
-                  e.stopPropagation();
-                  setDraggingTarget('y0');
-                }}
+                onPointerDown={(e) => startDragLine('y0', e)}
               >
                 <span
                   className="calib-tag"
@@ -413,10 +439,7 @@ export const GeometryStep: React.FC<GeometryStepProps> = ({
       </div>
 
       {/* 底部找帧时间轴栏 */}
-      <div
-        className="bottom-bar"
-        style={{ flexDirection: 'row', alignItems: 'center', minHeight: '42px', gap: '10px' }}
-      >
+      <div className="bottom-bar bottom-bar-row">
         <button type="button" onClick={togglePlay} className="btn">
           {isPlaying ? <Pause size={13} /> : <Play size={13} />}
           <span>{isPlaying ? '暂停' : '播放'}</span>

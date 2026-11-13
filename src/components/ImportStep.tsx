@@ -272,14 +272,6 @@ export const ImportStep: React.FC<ImportStepProps> = ({
         onClick={() => inputRef.current?.click()}
         className={`slot-card ${loadedClass}`}
       >
-        <input
-          ref={inputRef}
-          type="file"
-          accept="video/mp4,video/*"
-          style={{ display: 'none' }}
-          onChange={(e) => handleFileChange(e, index)}
-        />
-
         {/* 通道卡片顶栏 */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div className="control-group">
@@ -295,8 +287,8 @@ export const ImportStep: React.FC<ImportStepProps> = ({
 
         {/* 通道主体信息 */}
         {item ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', margin: 'auto 0' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div className="fx-col-12" style={{ display: 'flex', flexDirection: 'column', margin: 'auto 0' }}>
+            <div className="fx-row-8" style={{ display: 'flex', alignItems: 'center' }}>
               <CheckCircle2
                 size={16}
                 color={index === 1 ? 'var(--ch1)' : 'var(--ch2)'}
@@ -331,9 +323,9 @@ export const ImportStep: React.FC<ImportStepProps> = ({
                 <div className="mono-muted">分辨率</div>
                 <div className="mono-num" style={{ marginTop: '2px', fontWeight: 600 }}>
                   {isLoadingMeta ? (
-                    <span className="control-group" style={{ gap: '4px', color: 'var(--text-muted)' }}>
+                    <span className="control-group fx-row-4" style={{ color: 'var(--text-muted)' }}>
                       <Loader2 size={12} className="spin" />
-                      探测中
+                      <span>探测中</span>
                     </span>
                   ) : (
                     `${item.width}×${item.height}`
@@ -344,9 +336,9 @@ export const ImportStep: React.FC<ImportStepProps> = ({
                 <div className="mono-muted">时长</div>
                 <div className="mono-num" style={{ marginTop: '2px', fontWeight: 600 }}>
                   {isLoadingMeta ? (
-                    <span className="control-group" style={{ gap: '4px', color: 'var(--text-muted)' }}>
+                    <span className="control-group fx-row-4" style={{ color: 'var(--text-muted)' }}>
                       <Loader2 size={12} className="spin" />
-                      计算中
+                      <span>计算中</span>
                     </span>
                   ) : (
                     `${item.duration.toFixed(2)}s`
@@ -357,9 +349,9 @@ export const ImportStep: React.FC<ImportStepProps> = ({
                 <div className="mono-muted">测算 BPM</div>
                 <div className="mono-num" style={{ marginTop: '2px', fontWeight: 600 }}>
                   {isLoadingAudio ? (
-                    <span className="control-group" style={{ gap: '4px', color: 'var(--accent)' }}>
+                    <span className="control-group fx-row-4" style={{ color: 'var(--accent)' }}>
                       <Loader2 size={12} className="spin" />
-                      解析中
+                      <span>解析中</span>
                     </span>
                   ) : (
                     `${item.audioInfo?.detectedBpm ?? '--'} BPM`
@@ -370,12 +362,12 @@ export const ImportStep: React.FC<ImportStepProps> = ({
           </div>
         ) : (
           <div
+            className="fx-col-8"
             style={{
               display: 'flex',
               flexDirection: 'column',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: '8px',
               margin: 'auto 0',
               color: 'var(--text-secondary)',
             }}
@@ -414,6 +406,22 @@ export const ImportStep: React.FC<ImportStepProps> = ({
 
   return (
     <div className="import-stage">
+      {/* 隐藏文件输入挂载于网格之外，避免破坏子元素邻接间距；单类型 video/* 兼容老旧国产 ROM 文件选择器 */}
+      <input
+        ref={fileInputRef1}
+        type="file"
+        accept="video/*"
+        style={{ display: 'none' }}
+        onChange={(e) => handleFileChange(e, 1)}
+      />
+      <input
+        ref={fileInputRef2}
+        type="file"
+        accept="video/*"
+        style={{ display: 'none' }}
+        onChange={(e) => handleFileChange(e, 2)}
+      />
+
       {/* 隐藏的 DOM 挂载容器，用于唤醒移动端老旧内核的媒体加载流水线 */}
       <div
         ref={probeHostRef}

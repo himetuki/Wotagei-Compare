@@ -2,7 +2,7 @@
  * 离线导出时间戳数学模型、总帧数与音频重采样参数离线校验
  */
 
-import { isWebCodecsSupported } from './exporter.ts';
+import { isWebCodecsSupported, selectSupportedMediaRecorderMime } from './exporter.ts';
 import { isDownbeatIndex } from './metronome.ts';
 
 console.log('--- 1. 验证导出时长与确定性时间戳（PTS）计算模型 ---');
@@ -81,8 +81,15 @@ if (Math.abs(tauLastSample - clipEnd) > 0.01) {
   throw new Error('音频末采样点时间偏移未对齐');
 }
 
-console.log('--- 4. 验证环境 WebCodecs 探测接口导出 ---');
+console.log('--- 4. 验证环境 WebCodecs 与 MediaRecorder 降级 MIME 选择接口 ---');
 console.log('Node 环境下 isWebCodecsSupported():', isWebCodecsSupported(), '(非浏览器环境期望 false)');
+const pickedMime = selectSupportedMediaRecorderMime(
+  true,
+  (m) => m === 'video/webm;codecs=vp8,opus' || m === 'video/webm'
+);
+if (pickedMime !== 'video/webm;codecs=vp8,opus') {
+  throw new Error('MediaRecorder 优先 MIME 选择错误: ' + pickedMime);
+}
 
 console.log('--- 5. 验证离线合成节拍器锚点 (tau = 0) 重拍锁相与时间戳模型 ---');
 const bpmTest = 120;

@@ -121,3 +121,32 @@
 #### Scenario: 启动阶段发生未捕获致命错误触发兜底展示
 - **WHEN** 应用启动时静态资源加载超时或第三方环境缺少必要 API 导致致命脚本异常
 - **THEN** 页面自动呈现包含错误标题、具体信息和堆栈的深底红字诊断面板，方便用户截图排查定位
+
+### Requirement: 老旧内核 CSS 安全区特性查询隔离回退
+系统在全界面容器（包括顶部导航、工作区舞台、底部控制栏、导入舞台、空间标定舞台、对比台画布容器及导出网格）中应用包含 CSS 自定义变量的安全区边距函数（如 `max(..., var(--safe-*))`）时，MUST 将其包裹在 CSS `@supports (padding: max(0px))` 特性查询内，并在特性查询之外保留固定像素静态边距声明；严禁在无特性查询隔离的情况下让老旧 Chromium（`< 79`）内核执行含 `var()` 的 `max()` 表达式而触发 IACVT 归零。
+
+#### Scenario: Chrome 74 级别 WebView 渲染全应用边距
+- **WHEN** 应用在内置 Chrome 74 级别 System WebView 的 Android 10 设备上冷启动并依次切换至「导入」「CH1空间」「CH1时间」「对比台」「导出片段」页面
+- **THEN** 所有主容器与操作栏的左右及底部计算内边距均保持预设固定像素回退值（非 `0px`），卡片、时间轴与操作按钮不紧贴屏幕边缘或系统导航栏
+
+#### Scenario: 现代 Chrome 79+ 内核保留安全区避让叠加
+- **WHEN** 应用在支持 `max()` 与 `env(safe-area-inset-*)` 的现代移动设备或模拟器上横屏运行
+- **THEN** `@supports (padding: max(0px))` 规则块正常生效，各容器在静态最小边距与系统安全区宽度之间取较大值完成避让
+
+### Requirement: 跨代兼容 Flex 间距与 16:9 窄横屏布局零溢出
+系统在全部 Flexbox 容器中 MUST 采用不依赖 Chrome 84+ Flexbox `gap` 属性的间距实现（统一通过子元素邻接外边距控制横纵向间距），确保 Chrome 70~83 内核中所有按钮、图标与徽章间距清晰不粘连；在逻辑宽高 `640×360` 叠加 `48px` 侧边三键导航安全区的经典 16:9 窄横屏下，全部步骤的控件 MUST 完整位于安全视口内，严禁横向或纵向溢出截断。
+
+#### Scenario: Chrome 74 下全应用 Flex 按钮与标签间距有效
+- **WHEN** 应用在 Chrome 74 级别 Android 10 WebView 上渲染导入页、标定页、对比台及导出页
+- **THEN** 顶部步骤导航、通道卡片徽章、按钮内部图标与文本以及底栏控件组之间均具备非零像素间距，不发生 0px 贴连
+
+#### Scenario: 640x360 窄横屏叠加三键导航全界面零溢出
+- **WHEN** 应用在 `640×360` 逻辑视口且右侧存在 `48px` 安全区的设备横屏依次切换各页面（含叠加模式）
+- **THEN** 页面不出现横向或纵向滚动截断，所有按钮与控件右边界均不越过可用安全区右边界
+
+### Requirement: Android 原生系统栏纯黑锁定与存储文件兼容
+原生 Android 主题配置 MUST 显式将 `statusBarColor` 与 `navigationBarColor` 锁定为纯黑，避免老版本 ROM 浅色主题在系统导航栏显示浅色白条；`AndroidManifest.xml` 中 `WRITE_EXTERNAL_STORAGE` 权限 `maxSdkVersion` MUST 覆盖至 API 29（Android 10），配合 `requestLegacyExternalStorage` 保障 Android 6~10 原生导出文件写入成功（无权限时安全回退应用私有数据目录）；视频导入文件输入框的 `accept` 属性 SHALL 使用通用单类型 `video/*`，兼容老旧手机系统文件选择器。
+
+#### Scenario: 老版本 Android 原生主题导航栏与存储权限检查
+- **WHEN** 查看 Android 主题样式及 Manifest 配置并在 Android 10 设备导出视频
+- **THEN** 状态栏与导航栏背景配置为纯黑，`WRITE_EXTERNAL_STORAGE` 覆盖至 `maxSdkVersion="29"`，导入通道选择框使用 `accept="video/*"`，原生导出保存零权限异常

@@ -14,6 +14,8 @@ import { VideoExporter, ExportProgressInfo, isWebCodecsSupported } from '../core
 interface ExportPageProps {
   video1: LoadedVideoItem;
   video2: LoadedVideoItem;
+  sharedVideo1Ref: React.RefObject<HTMLVideoElement | null>;
+  sharedVideo2Ref: React.RefObject<HTMLVideoElement | null>;
   timeline: UnifiedTimelineResult;
   initialMode: ComparisonMode;
   initialMirror1: boolean;
@@ -33,6 +35,8 @@ interface ExportPageProps {
 export const ExportPage: React.FC<ExportPageProps> = ({
   video1,
   video2,
+  sharedVideo1Ref,
+  sharedVideo2Ref,
   timeline,
   initialMode,
   initialMirror1,
@@ -64,6 +68,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
     statusText: '就绪',
   });
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [downloadExt, setDownloadExt] = useState<'mp4' | 'webm'>('mp4');
   const [savedNativePath, setSavedNativePath] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const webCodecsSupported = isWebCodecsSupported();
@@ -71,8 +76,6 @@ export const ExportPage: React.FC<ExportPageProps> = ({
   const exporterRef = useRef<VideoExporter | null>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
   const trackRef = useRef<HTMLDivElement>(null);
-  const v1Ref = useRef<HTMLVideoElement>(null);
-  const v2Ref = useRef<HTMLVideoElement>(null);
   const engineRef = useRef<DualVideoSyncEngine | null>(null);
   const metronomeRef = useRef<SynthesizedMetronome>(new SynthesizedMetronome());
   const timelineRef = useRef<UnifiedTimelineResult>(timeline);
@@ -99,8 +102,8 @@ export const ExportPage: React.FC<ExportPageProps> = ({
   const seekRafIdRef = useRef<number | null>(null);
 
   const drawPreviewFrame = useCallback(() => {
-    const v1 = v1Ref.current;
-    const v2 = v2Ref.current;
+    const v1 = sharedVideo1Ref.current;
+    const v2 = sharedVideo2Ref.current;
     const canvas = previewCanvasRef.current;
     if (!v1 || !v2 || !canvas) return;
 
@@ -137,10 +140,12 @@ export const ExportPage: React.FC<ExportPageProps> = ({
     };
 
     renderComparisonFrame(ctx, renderState);
-    if ((v1Active && v1.readyState >= 2) || (v2Active && v2.readyState >= 2)) {
+    if (v1Ready && v2Ready && (v1Active || v2Active)) {
       hasRenderedRef.current = true;
     }
   }, [
+    sharedVideo1Ref,
+    sharedVideo2Ref,
     initialMode,
     initialMirror1,
     initialMirror2,
@@ -152,10 +157,10 @@ export const ExportPage: React.FC<ExportPageProps> = ({
     video2,
   ]);
 
-  // 初始化并连接 DualVideoSyncEngine 驱动预览
+  // 初始化并连接 DualVideoSyncEngine 驱动预览（直接复用对比台共享视频节点）
   useEffect(() => {
-    const v1 = v1Ref.current;
-    const v2 = v2Ref.current;
+    const v1 = sharedVideo1Ref.current;
+    const v2 = sharedVideo2Ref.current;
 
     const engine = new DualVideoSyncEngine(v1, v2, {
       timeline,
@@ -179,7 +184,8 @@ export const ExportPage: React.FC<ExportPageProps> = ({
 
     engineRef.current = engine;
 
-    // 初始定位并绘制第一帧
+    // 若共享节点已就绪，先立即绘出首帧，再精确寻道对齐至 previewTau
+    drawPreviewFrame();
     engine.seekToTau(previewTau, () => {
       drawPreviewFrame();
     });
@@ -187,30 +193,30 @@ export const ExportPage: React.FC<ExportPageProps> = ({
     // 建立由 requestAnimationFrame 驱动的预览渲染循环
     let animId: number;
     const renderLoop = () => {
-      const v1 = v1Ref.current;
-      const v2 = v2Ref.current;
+      const curV1 = sharedVideo1Ref.current;
+      const curV2 = sharedVideo2Ref.current;
       const canvas = previewCanvasRef.current;
 
-      if (v1 && v2 && canvas) {
+      if (curV1 && curV2 && canvas) {
         const ctx = canvas.getContext('2d');
         if (ctx) {
           const currentTau = previewTauRef.current;
           const v1Active = isTauInVideoRange(currentTau, timeline.span1);
           const v2Active = isTauInVideoRange(currentTau, timeline.span2);
 
-          const v1Ready = !v1Active || (v1.readyState >= 2 && !v1.seeking);
-          const v2Ready = !v2Active || (v2.readyState >= 2 && !v2.seeking);
+          const v1Ready = !v1Active || (curV1.readyState >= 2 && !curV1.seeking);
+          const v2Ready = !v2Active || (curV2.readyState >= 2 && !curV2.seeking);
 
           if ((v1Ready && v2Ready) || !hasRenderedRef.current) {
             try {
               const renderState: ComparisonRenderState = {
                 mode: initialMode,
-                video1: v1,
+                video1: curV1,
                 video1Size: { width: video1.width, height: video1.height },
                 video1Active: v1Active,
                 mirror1: initialMirror1,
                 triLine1: video1.geometry.triLine,
-                video2: v2,
+                video2: curV2,
                 video2Size: { width: video2.width, height: video2.height },
                 video2Active: v2Active,
                 mirror2: initialMirror2,
@@ -223,7 +229,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
               };
 
               renderComparisonFrame(ctx, renderState);
-              if ((v1Active && v1.readyState >= 2) || (v2Active && v2.readyState >= 2)) {
+              if (v1Ready && v2Ready && (v1Active || v2Active)) {
                 hasRenderedRef.current = true;
               }
             } catch {
@@ -248,6 +254,8 @@ export const ExportPage: React.FC<ExportPageProps> = ({
       engineRef.current = null;
     };
   }, [
+    sharedVideo1Ref,
+    sharedVideo2Ref,
     initialMode,
     initialMirror1,
     initialMirror2,
@@ -404,9 +412,10 @@ export const ExportPage: React.FC<ExportPageProps> = ({
   };
 
   /**
-   * 启动 A-B 区间离线合成导出
+   * 启动 A-B 区间合成导出（现代 WebCodecs MP4 或老旧 WebView 兼容 MediaRecorder WebM）
    */
   const handleStartExport = async () => {
+    ensureStopped();
     setIsExporting(true);
     setErrorMsg(null);
     setDownloadUrl(null);
@@ -423,6 +432,8 @@ export const ExportPage: React.FC<ExportPageProps> = ({
     const exporter = new VideoExporter({
       video1,
       video2,
+      sharedVideo1: sharedVideo1Ref.current,
+      sharedVideo2: sharedVideo2Ref.current,
       timeline: customTimeline,
       mode: initialMode,
       mirror1: initialMirror1,
@@ -442,6 +453,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
     try {
       const result = await exporter.export();
       const url = URL.createObjectURL(result.blob);
+      setDownloadExt(result.fileExtension);
       setDownloadUrl(url);
       if (result.savedPath) {
         setSavedNativePath(result.savedPath);
@@ -452,6 +464,21 @@ export const ExportPage: React.FC<ExportPageProps> = ({
       }
     } finally {
       setIsExporting(false);
+      // 导出结束或取消后，预览引擎重新接管共享视频并回归当前预览点
+      const v1 = sharedVideo1Ref.current;
+      const v2 = sharedVideo2Ref.current;
+      if (v1 && v2) {
+        engineRef.current?.attachVideos(v1, v2);
+        engineRef.current?.updateConfig({
+          timeline,
+          anchor1: a1,
+          anchor2: a2,
+          soundSource: initialSoundSource,
+          slowMotionRate: initialRate,
+          loopInterval: { start: clipStart, end: clipEnd },
+        });
+        seekPreview(previewTauRef.current, undefined, false);
+      }
     }
   };
 
@@ -481,42 +508,6 @@ export const ExportPage: React.FC<ExportPageProps> = ({
         backgroundColor: 'var(--bg-canvas)',
       }}
     >
-      {/* 活跃挂载的底层解码视频源，避免老旧内核合成器停止帧刷新 */}
-      <video
-        ref={v1Ref}
-        src={video1.url}
-        preload="auto"
-        playsInline
-        muted
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          width: '1px',
-          height: '1px',
-          opacity: 0.01,
-          pointerEvents: 'none',
-          zIndex: -9999,
-        }}
-      />
-      <video
-        ref={v2Ref}
-        src={video2.url}
-        preload="auto"
-        playsInline
-        muted
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          width: '1px',
-          height: '1px',
-          opacity: 0.01,
-          pointerEvents: 'none',
-          zIndex: -9999,
-        }}
-      />
-
       {/* 顶部栏：返回对比台与继承参数只读徽章 */}
       <div className="toolbar-row">
         <div className="control-group">
@@ -529,7 +520,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
             <ArrowLeft size={13} />
             <span>返回对比台</span>
           </button>
-          <span style={{ fontSize: '12px', fontWeight: 600 }}>A-B 区间导出</span>
+          <span style={{ fontSize: '12px', fontWeight: 600, whiteSpace: 'nowrap' }}>A-B 区间导出</span>
         </div>
 
         <div className="control-group">
@@ -538,14 +529,16 @@ export const ExportPage: React.FC<ExportPageProps> = ({
           </span>
           <span className="tag-badge">{initialRate}x</span>
           <span className="tag-badge">{soundLabel}</span>
-          <span className="tag-badge">1280×720 · 30FPS</span>
+          <span className="tag-badge">
+            {webCodecsSupported ? '1280×720 · MP4' : '960×540 · WebM'}
+          </span>
         </div>
       </div>
 
       {/* 主体两栏 */}
       <div className="export-grid">
         {/* 左栏：实时画面预览、预览播放控制与时间滑块 */}
-        <div className="panel-box" style={{ gap: '6px' }}>
+        <div className="panel-box fx-col-6">
           <div
             style={{
               flex: 1,
@@ -567,12 +560,13 @@ export const ExportPage: React.FC<ExportPageProps> = ({
             />
           </div>
 
-          <div className="control-group" style={{ gap: '6px' }}>
+          <div className="control-group">
             <button
               type="button"
               className="btn btn-accent"
               style={{ padding: '0 8px', height: '26px' }}
               onClick={togglePreviewPlay}
+              disabled={isExporting}
             >
               {isPreviewPlaying ? <Pause size={12} /> : <Play size={12} />}
               <span style={{ fontSize: '11px' }}>{isPreviewPlaying ? '暂停' : '预览'}</span>
@@ -585,6 +579,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
               max={clipEnd}
               step="0.01"
               value={previewTau}
+              disabled={isExporting}
               onChange={(e) => {
                 seekPreview(parseFloat(e.target.value));
               }}
@@ -597,16 +592,9 @@ export const ExportPage: React.FC<ExportPageProps> = ({
           </div>
         </div>
 
-        {/* 右栏：A-B 截取滑块、成片统计与导出执行 (自适应紧凑防下溢) */}
-        <div
-          className="panel-box"
-          style={{
-            gap: '6px',
-            overflowY: 'auto',
-            justifyContent: 'space-between',
-          }}
-        >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+        {/* 右栏：上半区可滚动统计与轨道，下半区固定底部导出按钮（保障 360px 窄屏按钮必现） */}
+        <div className="panel-box fx-col-6" style={{ justifyContent: 'space-between' }}>
+          <div className="export-side-scroll">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
                 导出区间
@@ -618,6 +606,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
 
             {/* 统一交集轴标定卡片 */}
             <div
+              className="fx-col-6"
               style={{
                 backgroundColor: 'var(--bg-surface)',
                 border: '1px solid var(--border)',
@@ -625,12 +614,11 @@ export const ExportPage: React.FC<ExportPageProps> = ({
                 padding: '6px 8px',
                 display: 'flex',
                 flexDirection: 'column',
-                gap: '6px',
               }}
             >
               {/* 快捷标记与数值反馈 */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <div className="fx-row-8" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div className="fx-row-4" style={{ display: 'flex', alignItems: 'center' }}>
                   <span className="mono-num" style={{ color: 'var(--accent)', fontSize: '11px', fontWeight: 600 }}>
                     IN (A): {clipStart >= 0 ? `+${clipStart.toFixed(2)}s` : `${clipStart.toFixed(2)}s`}
                   </span>
@@ -649,7 +637,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
                   </button>
                 </div>
 
-                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <div className="fx-row-4" style={{ display: 'flex', alignItems: 'center' }}>
                   <button
                     type="button"
                     className="btn"
@@ -812,29 +800,30 @@ export const ExportPage: React.FC<ExportPageProps> = ({
                 </div>
               </div>
             </div>
-          </div>
 
-          {/* 底部进度与导出按钮 */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '2px' }}>
             {!webCodecsSupported && (
               <div
+                className="export-compat-note"
                 style={{
                   backgroundColor: 'var(--bg-surface)',
                   border: '1px solid var(--accent)',
                   borderRadius: '4px',
-                  padding: '6px 8px',
-                  fontSize: '11px',
-                  lineHeight: '1.4',
+                  padding: '5px 8px',
+                  fontSize: '10.5px',
+                  lineHeight: '1.35',
                   color: 'var(--text-secondary)',
                 }}
               >
-                <span style={{ color: 'var(--accent)', fontWeight: 600 }}>提示：</span>
-                当前系统 WebView 内核低于 Chrome 94，WebCodecs 硬件视频编码器暂不可用。若需导出离线 MP4，可在应用商店升级「Android System WebView」；您仍可在对比台上流畅使用慢放与同台对比。
+                <span style={{ color: 'var(--accent)', fontWeight: 600 }}>兼容模式：</span>
+                当前 WebView 不支持 WebCodecs，将实时录制导出 WebM 视频（耗时约等同成片时长）。
               </div>
             )}
+          </div>
 
+          {/* 固定底部进度与导出按钮区 */}
+          <div className="export-side-actions">
             {isExporting && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+              <div className="fx-col-3" style={{ display: 'flex', flexDirection: 'column' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <span className="mono-muted" style={{ fontSize: '11px' }}>{progress.statusText}</span>
                   <span className="mono-num" style={{ color: 'var(--accent)', fontSize: '11px' }}>
@@ -879,10 +868,10 @@ export const ExportPage: React.FC<ExportPageProps> = ({
             {downloadUrl && !isExporting && (
               <a
                 href={downloadUrl}
-                download={`wotagei-compare-${Date.now()}.mp4`}
+                download={`wotagei-compare-${Date.now()}.${downloadExt}`}
                 className="btn"
                 style={{
-                  height: '30px',
+                  height: '28px',
                   textDecoration: 'none',
                   borderColor: 'var(--ch2)',
                   color: 'var(--ch2)',
@@ -890,7 +879,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
                 }}
               >
                 <Download size={13} />
-                <span>下载导出文件</span>
+                <span>下载导出文件 (.{downloadExt})</span>
               </a>
             )}
 
@@ -899,7 +888,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
                 type="button"
                 onClick={handleCancelExport}
                 className="btn btn-danger"
-                style={{ height: '32px', width: '100%', fontSize: '12px' }}
+                style={{ height: '30px', width: '100%', fontSize: '12px' }}
               >
                 <X size={13} />
                 <span>取消导出</span>
@@ -909,7 +898,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
                 type="button"
                 onClick={handleStartExport}
                 className="btn btn-accent"
-                style={{ height: '32px', width: '100%', fontSize: '12px' }}
+                style={{ height: '30px', width: '100%', fontSize: '12px' }}
               >
                 <Download size={13} />
                 <span>开始渲染导出</span>

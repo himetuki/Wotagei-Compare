@@ -212,7 +212,7 @@ export default function App(): React.ReactNode {
           </nav>
         </div>
 
-        <div className="control-group" style={{ flexShrink: 0, gap: '6px' }}>
+        <div className="control-group" style={{ flexShrink: 0 }}>
           {step === 'workbench' && (
             <>
               {video1 && (
@@ -253,7 +253,7 @@ export default function App(): React.ReactNode {
           )}
 
           {(step === 'geometry-video1' || step === 'geometry-video2') && (video1 || video2) && (
-            <div className="control-group" style={{ gap: '6px' }}>
+            <div className="control-group">
               <select
                 value={triLineModel}
                 onChange={(e) => handleTriLineModelChange(e.target.value as TriLineModelType)}

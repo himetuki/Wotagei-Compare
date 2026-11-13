@@ -52,6 +52,19 @@ body,
   display: none;
 }
 
+/* 跨代兼容的 Flex 相邻子元素间距工具类（Chrome < 84 不支持 Flex gap） */
+.fx-row-4 > * + * { margin-left: 4px; }
+.fx-row-6 > * + * { margin-left: 6px; }
+.fx-row-8 > * + * { margin-left: 8px; }
+.fx-row-10 > * + * { margin-left: 10px; }
+
+.fx-col-3 > * + * { margin-top: 3px; }
+.fx-col-4 > * + * { margin-top: 4px; }
+.fx-col-5 > * + * { margin-top: 5px; }
+.fx-col-6 > * + * { margin-top: 6px; }
+.fx-col-8 > * + * { margin-top: 8px; }
+.fx-col-12 > * + * { margin-top: 12px; }
+
 /* 全局外壳与顶部步骤直达导航 */
 .app-shell {
   width: 100vw;
@@ -67,25 +80,29 @@ body,
   height: calc(40px + var(--safe-top));
   padding-top: var(--safe-top);
   padding-right: 12px;
-  padding-right: max(12px, var(--safe-right));
   padding-bottom: 0;
   padding-left: 12px;
-  padding-left: max(12px, var(--safe-left));
   background-color: var(--bg-panel);
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
   flex-shrink: 0;
   z-index: 40;
+}
+
+.top-nav > * + * {
+  margin-left: 8px;
 }
 
 .step-track {
   display: flex;
   align-items: center;
-  gap: 2px;
   height: 100%;
+}
+
+.step-track > * + * {
+  margin-left: 2px;
 }
 
 .step-tab {
@@ -99,11 +116,14 @@ body,
   font-weight: 500;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
   white-space: nowrap;
   flex-shrink: 0;
   cursor: pointer;
   transition: background-color 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.step-tab > * + * {
+  margin-left: 4px;
 }
 
 .step-tab:hover:not(:disabled) {
@@ -149,9 +169,11 @@ body,
   align-items: center;
   justify-content: space-between;
   padding: 0 12px;
-  padding: 0 max(12px, var(--safe-right)) 0 max(12px, var(--safe-left));
-  gap: 10px;
   flex-shrink: 0;
+}
+
+.toolbar-row > * + * {
+  margin-left: 10px;
 }
 
 .bottom-bar {
@@ -159,21 +181,40 @@ body,
   border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  padding-top: 6px;
-  padding-right: 12px;
-  padding-right: max(12px, var(--safe-right));
-  padding-bottom: 6px;
-  padding-bottom: max(6px, var(--safe-bottom));
-  padding-left: 12px;
-  padding-left: max(12px, var(--safe-left));
-  gap: 6px;
+  padding: 6px 12px;
   flex-shrink: 0;
+}
+
+.bottom-bar > * + * {
+  margin-top: 6px;
+}
+
+.bottom-bar-row {
+  flex-direction: row;
+  align-items: center;
+  min-height: 42px;
+}
+
+.bottom-bar-row > * + * {
+  margin-top: 0;
+  margin-left: 10px;
 }
 
 .control-group {
   display: flex;
   align-items: center;
-  gap: 6px;
+}
+
+.control-group > * + * {
+  margin-left: 6px;
+}
+
+.control-group.fx-row-4 > * + * {
+  margin-left: 4px;
+}
+
+.control-group.fx-row-10 > * + * {
+  margin-left: 10px;
 }
 
 .divider-v {
@@ -201,7 +242,6 @@ body,
 .tag-badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
   height: 22px;
   padding: 0 8px;
   border-radius: 3px;
@@ -213,6 +253,10 @@ body,
   color: var(--text-secondary);
   white-space: nowrap;
   flex-shrink: 0;
+}
+
+.tag-badge > * + * {
+  margin-left: 4px;
 }
 
 .tag-badge.ch1 {
@@ -240,10 +284,13 @@ body,
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
   cursor: pointer;
   white-space: nowrap;
   transition: background-color 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.btn > * + * {
+  margin-left: 5px;
 }
 
 .btn:hover:not(:disabled) {
@@ -288,7 +335,10 @@ body,
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 2px;
-  gap: 2px;
+}
+
+.seg-group > * + * {
+  margin-left: 2px;
 }
 
 .seg-btn {
@@ -302,8 +352,11 @@ body,
   font-weight: 500;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
   cursor: pointer;
+}
+
+.seg-btn > * + * {
+  margin-left: 4px;
 }
 
 .seg-btn:hover {
@@ -364,16 +417,13 @@ body,
   flex: 1;
   display: flex;
   flex-direction: column;
-  padding-top: 16px;
-  padding-right: 20px;
-  padding-right: max(20px, var(--safe-right));
-  padding-bottom: 16px;
-  padding-bottom: max(16px, var(--safe-bottom));
-  padding-left: 20px;
-  padding-left: max(20px, var(--safe-left));
-  gap: 14px;
+  padding: 16px 20px;
   background-color: var(--bg-canvas);
   min-height: 0;
+}
+
+.import-stage > * + * {
+  margin-top: 14px;
 }
 
 .slot-grid {
@@ -421,7 +471,18 @@ body,
   min-height: 0;
   touch-action: none;
   padding: 0 12px;
-  padding: 0 max(12px, var(--safe-right)) 0 max(12px, var(--safe-left));
+}
+
+/* 对比工作台主画布容器 */
+.workbench-stage {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--bg-canvas);
+  min-height: 0;
+  padding: 0 8px;
 }
 
 .calib-frame {
@@ -497,13 +558,7 @@ body,
   display: grid;
   grid-template-columns: 1.35fr 1fr;
   gap: 12px;
-  padding-top: 10px;
-  padding-right: 14px;
-  padding-right: max(14px, var(--safe-right));
-  padding-bottom: 10px;
-  padding-bottom: max(10px, var(--safe-bottom));
-  padding-left: 14px;
-  padding-left: max(14px, var(--safe-left));
+  padding: 10px 14px;
   min-height: 0;
 }
 
@@ -514,6 +569,166 @@ body,
   padding: 10px 12px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
   min-height: 0;
+}
+
+.panel-box > * + * {
+  margin-top: 8px;
+}
+
+.panel-box.fx-col-6 > * + * {
+  margin-top: 6px;
+}
+
+.export-side-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.export-side-scroll > * + * {
+  margin-top: 5px;
+}
+
+.export-side-actions {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  padding-top: 4px;
+}
+
+.export-side-actions > * + * {
+  margin-top: 5px;
+}
+
+/* 16:9 经典窄屏横屏（如 640x360 + 金刚键）紧凑自适应规则 */
+@media (max-width: 760px) {
+  .step-tab {
+    padding: 0 5px;
+    font-size: 11px;
+  }
+
+  .audio-controls-row .btn {
+    height: 24px;
+    padding: 0 5px !important;
+    font-size: 11px;
+  }
+
+  .audio-controls-row .btn > * + * {
+    margin-left: 3px;
+  }
+
+  .audio-controls-row .control-group > * + * {
+    margin-left: 3px;
+  }
+
+  .audio-time-readout {
+    min-width: 46px !important;
+    font-size: 10.5px !important;
+  }
+
+  .audio-anchor-input {
+    width: 50px !important;
+    height: 22px !important;
+    font-size: 11px !important;
+  }
+
+  .audio-bpm-input {
+    width: 38px !important;
+    height: 22px !important;
+    font-size: 11px !important;
+  }
+
+  .audio-trim-prefix {
+    display: none;
+  }
+
+  .workbench-controls-row .btn {
+    height: 24px;
+    padding: 0 4px !important;
+    font-size: 10px;
+  }
+
+  .workbench-controls-row .seg-btn {
+    height: 20px;
+    padding: 0 3px !important;
+    font-size: 9.5px !important;
+  }
+
+  .workbench-rate-label,
+  .workbench-bpm-unit {
+    display: none;
+  }
+
+  .workbench-opacity-slider {
+    width: 34px !important;
+  }
+
+  .workbench-sync-badge {
+    padding: 0 5px !important;
+    height: 22px !important;
+    font-size: 10px !important;
+  }
+}
+
+@media (max-height: 400px) {
+  .toolbar-row {
+    height: 34px;
+  }
+
+  .export-grid {
+    gap: 8px;
+    padding: 6px 12px;
+  }
+
+  .panel-box {
+    padding: 6px 8px;
+  }
+
+  .export-compat-note {
+    font-size: 10px !important;
+    line-height: 1.3 !important;
+    padding: 4px 6px !important;
+  }
+}
+
+/* 仅支持 CSS max() 的现代 WebView（Chrome 79+）才启用安全区叠加，防止 Chrome 74 触发 IACVT 归零 */
+@supports (padding: max(0px)) {
+  .top-nav {
+    padding-right: max(12px, var(--safe-right));
+    padding-left: max(12px, var(--safe-left));
+  }
+
+  .toolbar-row {
+    padding: 0 max(12px, var(--safe-right)) 0 max(12px, var(--safe-left));
+  }
+
+  .bottom-bar {
+    padding-right: max(12px, var(--safe-right));
+    padding-bottom: max(6px, var(--safe-bottom));
+    padding-left: max(12px, var(--safe-left));
+  }
+
+  .import-stage {
+    padding-right: max(20px, var(--safe-right));
+    padding-bottom: max(16px, var(--safe-bottom));
+    padding-left: max(20px, var(--safe-left));
+  }
+
+  .calib-stage {
+    padding: 0 max(12px, var(--safe-right)) 0 max(12px, var(--safe-left));
+  }
+
+  .workbench-stage {
+    padding-left: max(8px, var(--safe-left));
+    padding-right: max(8px, var(--safe-right));
+  }
+
+  .export-grid {
+    padding-right: max(14px, var(--safe-right));
+    padding-bottom: max(10px, var(--safe-bottom));
+    padding-left: max(14px, var(--safe-left));
+  }
 }

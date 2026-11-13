@@ -207,14 +207,21 @@ export const Workbench: React.FC<WorkbenchProps> = ({
     }
   }, [isExportActive, timeline.effectiveBpm]);
 
-  // 当视频 ref 挂载或从导出页切回对比台时，自动同步给引擎并定位至当前 tau
+  // 当视频 ref 挂载或从导出页切回对比台时，自动重新绑定控制权、恢复倍速静音配置并定位至当前 tau
   useEffect(() => {
     const v1 = videoRef1.current;
     const v2 = videoRef2.current;
     if (!v1 || !v2 || isExportActive) return;
 
     engineRef.current?.attachVideos(v1, v2);
-    engineRef.current?.seekToTau(tauRef.current);
+    engineRef.current?.updateConfig({
+      timeline,
+      anchor1: a1,
+      anchor2: a2,
+      soundSource,
+      slowMotionRate,
+    });
+    engineRef.current?.seekToTau(tauRef.current, undefined, false);
   }, [isExportActive, video1.url, video2.url]);
 
   /**
@@ -354,6 +361,9 @@ export const Workbench: React.FC<WorkbenchProps> = ({
   const lastDistRef = useRef<number | null>(null);
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {}
     pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (pointersRef.current.size === 2) {
       const pts = Array.from(pointersRef.current.values());
@@ -391,6 +401,9 @@ export const Workbench: React.FC<WorkbenchProps> = ({
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {}
     pointersRef.current.delete(e.pointerId);
     if (pointersRef.current.size < 2) {
       lastDistRef.current = null;
@@ -412,7 +425,43 @@ export const Workbench: React.FC<WorkbenchProps> = ({
         backgroundColor: 'var(--bg-canvas)',
       }}
     >
-      {/* 隐藏视频解码源与对比台视图：当处于导出页时隐藏并暂停，但保持 DOM 节点与视频句柄存活 */}
+      {/* 共享底层视频解码节点：始终挂载于可见容器下（不放在 display:none 内部），供对比台与导出页共同复用，总并发解码器严格控制在 2 路 */}
+      <video
+        ref={videoRef1}
+        src={video1.url}
+        playsInline
+        preload="auto"
+        muted
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '1px',
+          height: '1px',
+          opacity: 0.01,
+          pointerEvents: 'none',
+          zIndex: -9999,
+        }}
+      />
+      <video
+        ref={videoRef2}
+        src={video2.url}
+        playsInline
+        preload="auto"
+        muted
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '1px',
+          height: '1px',
+          opacity: 0.01,
+          pointerEvents: 'none',
+          zIndex: -9999,
+        }}
+      />
+
+      {/* 对比台视图：导出激活时仅隐藏界面容器，视频解码节点由导出台无缝接管 */}
       <div
         style={{
           flex: 1,
@@ -422,48 +471,11 @@ export const Workbench: React.FC<WorkbenchProps> = ({
           backgroundColor: 'var(--bg-canvas)',
         }}
       >
-        {/* 隐藏视频解码源 */}
-        {/* 底层支撑视频节点：以不可见但常驻活跃的方式挂载，确保老旧内核 GPU 合成器持续刷新解码纹理 */}
-        <video
-          ref={videoRef1}
-          src={video1.url}
-          playsInline
-          preload="auto"
-          muted
-          style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            width: '1px',
-            height: '1px',
-            opacity: 0.01,
-            pointerEvents: 'none',
-            zIndex: -9999,
-          }}
-        />
-        <video
-          ref={videoRef2}
-          src={video2.url}
-          playsInline
-          preload="auto"
-          muted
-          style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            width: '1px',
-            height: '1px',
-            opacity: 0.01,
-            pointerEvents: 'none',
-            zIndex: -9999,
-          }}
-        />
-
         {/* 顶部工作台参数栏（可折叠，默认收起） */}
       {isToolbarExpanded && (
         <div className="toolbar-row">
           {/* 左：对比模式切换与视口复位（分区在前、叠加在后） */}
-          <div className="control-group" style={{ gap: '4px' }}>
+          <div className="control-group fx-row-4">
             <div className="seg-group">
               <button
                 type="button"
@@ -499,7 +511,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
           </div>
 
           {/* 中：声音输出源与双通道独立镜像 */}
-          <div className="control-group" style={{ gap: '4px' }}>
+          <div className="control-group fx-row-4">
             <div className="seg-group">
               {(
                 [
@@ -592,19 +604,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
       </div>
 
       {/* 中部单画布渲染视口 */}
-      <div
-        style={{
-          flex: 1,
-          position: 'relative',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          backgroundColor: 'var(--bg-canvas)',
-          minHeight: 0,
-          paddingLeft: 'max(8px, var(--safe-left))',
-          paddingRight: 'max(8px, var(--safe-right))',
-        }}
-      >
+      <div className="workbench-stage">
         <canvas
           ref={canvasRef}
           width={1920}
@@ -626,7 +626,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
       {/* 底部时间轴与慢放控制台 */}
       <div className="bottom-bar">
         {/* 第一行：统一时间轴滑块 */}
-        <div className="control-group" style={{ gap: '10px' }}>
+        <div className="control-group fx-row-10">
           <span className="mono-num" style={{ minWidth: '64px' }}>
             {tau >= 0 ? `+${tau.toFixed(2)}s` : `${tau.toFixed(2)}s`}
           </span>
@@ -646,8 +646,11 @@ export const Workbench: React.FC<WorkbenchProps> = ({
         </div>
 
         {/* 第二行：播放步进、七档慢放、叠加透明度 */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-          <div className="control-group" style={{ gap: '4px' }}>
+        <div
+          className="workbench-controls-row fx-row-8"
+          style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
+        >
+          <div className="control-group fx-row-4">
             <button type="button" onClick={playFromPreRoll} className="btn" style={{ padding: '0 8px' }}>
               <Crosshair size={12} />
               <span>锚点前 1s</span>
@@ -659,8 +662,8 @@ export const Workbench: React.FC<WorkbenchProps> = ({
             </button>
           </div>
 
-          <div className="control-group" style={{ gap: '4px' }}>
-            <span className="mono-muted" style={{ fontSize: '11px' }}>倍速</span>
+          <div className="control-group fx-row-4">
+            <span className="mono-muted workbench-rate-label" style={{ fontSize: '11px' }}>倍速</span>
             <div className="seg-group">
               {SLOW_MOTION_RATES.map((rate) => (
                 <button
@@ -676,15 +679,15 @@ export const Workbench: React.FC<WorkbenchProps> = ({
             </div>
           </div>
 
-          <div className="control-group" style={{ gap: '6px', flexShrink: 0 }}>
+          <div className="control-group" style={{ flexShrink: 0 }}>
             {mode === 'overlay' && (
-              <div className="control-group" style={{ gap: '4px' }}>
+              <div className="control-group fx-row-4">
                 <span className="mono-muted" style={{ color: 'var(--ch1)', fontSize: '11px' }}>
                   CH1
                 </span>
                 <input
                   type="range"
-                  className="slider"
+                  className="slider workbench-opacity-slider"
                   min="-1"
                   max="1"
                   step="0.05"
@@ -706,8 +709,8 @@ export const Workbench: React.FC<WorkbenchProps> = ({
               <button
                 type="button"
                 onClick={() => setIsBpmMenuOpen((prev) => !prev)}
-                className={`tag-badge ${isBpmMenuOpen ? 'ch1' : ''}`}
-                style={{ cursor: 'pointer', fontSize: '11px', height: '24px', gap: '3px' }}
+                className={`tag-badge workbench-sync-badge ${isBpmMenuOpen ? 'ch1' : ''}`}
+                style={{ cursor: 'pointer', fontSize: '11px', height: '24px' }}
                 title="点击选择 BPM 对齐策略"
               >
                 <ChevronUp
@@ -717,11 +720,12 @@ export const Workbench: React.FC<WorkbenchProps> = ({
                     transition: 'transform 0.15s ease',
                   }}
                 />
-                <span>SYNC {Math.round(timeline.effectiveBpm)} BPM</span>
+                <span>SYNC {Math.round(timeline.effectiveBpm)}<span className="workbench-bpm-unit"> BPM</span></span>
               </button>
 
               {isBpmMenuOpen && (
                 <div
+                  className="fx-col-6"
                   style={{
                     position: 'absolute',
                     bottom: 'calc(100% + 6px)',
@@ -732,7 +736,6 @@ export const Workbench: React.FC<WorkbenchProps> = ({
                     padding: '8px 10px',
                     display: 'flex',
                     flexDirection: 'column',
-                    gap: '6px',
                     boxShadow: '0 6px 20px rgba(0,0,0,0.8)',
                     zIndex: 50,
                     whiteSpace: 'nowrap',
@@ -785,7 +788,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
                   </div>
 
                   {bpmStrategy === 'custom' && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' }}>
+                    <div className="fx-row-6" style={{ display: 'flex', alignItems: 'center', marginTop: '2px' }}>
                       <span className="mono-muted" style={{ fontSize: '11px' }}>目标 BPM:</span>
                       <input
                         type="number"
@@ -807,11 +810,13 @@ export const Workbench: React.FC<WorkbenchProps> = ({
       </div>
       </div>
 
-      {/* 独立导出片段视图：与对比台同级并存，导出激活时浮层展示 */}
+      {/* 独立导出片段视图：复用对比台的共享视频解码节点，避免重复创建 4 路视频导致老机黑屏 */}
       {isExportActive && (
         <ExportPage
           video1={video1}
           video2={video2}
+          sharedVideo1Ref={videoRef1}
+          sharedVideo2Ref={videoRef2}
           timeline={timeline}
           initialMode={mode}
           initialMirror1={mirror1}
