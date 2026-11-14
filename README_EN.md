@@ -152,6 +152,11 @@ Bug reports, device compatibility feedback, and pull requests are welcome. Pleas
 2. **Landscape & Safe-Area Layout**: Every view is designed for short-height mobile landscape viewports. Ensure UI changes respect display cutouts, status bars, and 3-button navigation bar insets via CSS safe-area variables without clipping primary controls.
 3. **Algorithm Verification**: When changing math or state machines in `src/core/` or the native exporter, run the corresponding `.verify.ts` scripts and Gradle unit tests.
 
+## Acknowledgements
+
+- Thanks to **夜瞑 (Yeming)** for authorizing the demonstration footage used in the screenshots.
+- Thanks to members of **ShanghaiTech Prism Anime Club · Lucifer Wotagei Team** for device testing and feedback.
+
 ## License
 
 Released under the [MIT License](./LICENSE).
