@@ -866,21 +866,32 @@ public class NativeOfflineExporter {
             if (itemUri == null) {
                 throw new IOException("无法在系统相册创建视频记录");
             }
-            try (InputStream in = new FileInputStream(tempMp4);
-                 OutputStream out = resolver.openOutputStream(itemUri)) {
-                if (out == null) {
-                    throw new IOException("无法打开相册输出流");
+            try {
+                try (InputStream in = new FileInputStream(tempMp4);
+                     OutputStream out = resolver.openOutputStream(itemUri)) {
+                    if (out == null) {
+                        throw new IOException("无法打开相册输出流");
+                    }
+                    byte[] buf = new byte[65536];
+                    int read;
+                    while ((read = in.read(buf)) != -1) {
+                        out.write(buf, 0, read);
+                    }
                 }
-                byte[] buf = new byte[65536];
-                int read;
-                while ((read = in.read(buf)) != -1) {
-                    out.write(buf, 0, read);
+                ContentValues doneValues = new ContentValues();
+                doneValues.put(MediaStore.Video.Media.IS_PENDING, 0);
+                resolver.update(itemUri, doneValues, null, null);
+                return Environment.DIRECTORY_MOVIES + "/WotageiCompare/" + fileName;
+            } catch (Exception e) {
+                // 写入中断时立即回滚删除 IS_PENDING 占位记录，防止相册留存损坏条目
+                try {
+                    resolver.delete(itemUri, null, null);
+                } catch (Exception ignored) {}
+                if (e instanceof IOException) {
+                    throw (IOException) e;
                 }
+                throw new IOException("写入系统相册失败: " + e.getMessage(), e);
             }
-            ContentValues doneValues = new ContentValues();
-            doneValues.put(MediaStore.Video.Media.IS_PENDING, 0);
-            resolver.update(itemUri, doneValues, null, null);
-            return Environment.DIRECTORY_MOVIES + "/WotageiCompare/" + fileName;
         }
 
         // Android 6 ~ 9：写入公共 Movies/WotageiCompare 目录并通知媒体扫描

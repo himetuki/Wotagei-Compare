@@ -33,14 +33,17 @@ public class LocalRangeProxyServer {
     private final Map<String, Uri> uriRegistry = new ConcurrentHashMap<>();
     private final Map<Integer, String> channelTokenMap = new ConcurrentHashMap<>();
     private final Map<String, AudioPcmPayload> audioPcmRegistry = new ConcurrentHashMap<>();
+    private final Map<String, String> audioOwnerTokenMap = new ConcurrentHashMap<>();
     private final ExecutorService executor = Executors.newCachedThreadPool();
 
     private static class AudioPcmPayload {
+        final String ownerKey;
         final byte[] pcmInt16Le;
         final int sampleRate;
         final double durationSec;
 
-        AudioPcmPayload(byte[] pcmInt16Le, int sampleRate, double durationSec) {
+        AudioPcmPayload(String ownerKey, byte[] pcmInt16Le, int sampleRate, double durationSec) {
+            this.ownerKey = ownerKey;
             this.pcmInt16Le = pcmInt16Le;
             this.sampleRate = sampleRate;
             this.durationSec = durationSec;
@@ -52,7 +55,7 @@ public class LocalRangeProxyServer {
     private volatile boolean running = false;
 
     public LocalRangeProxyServer(Context context) {
-        this.appContext = context.getApplicationContext();
+        this.appContext = context != null ? context.getApplicationContext() : null;
     }
 
     /**
@@ -84,13 +87,16 @@ public class LocalRangeProxyServer {
     }
 
     /**
-     * 为指定通道注册 URI 并返回本地流式访问 URL（覆盖同通道旧绑定）
+     * 为指定通道注册 URI 并返回本地流式访问 URL（覆盖同通道旧绑定，并清理旧 URI 未消费音频载荷）
      */
     public String registerChannelUri(int channel, Uri uri) throws IOException {
         int activePort = ensureStarted();
         String oldToken = channelTokenMap.remove(channel);
         if (oldToken != null) {
-            uriRegistry.remove(oldToken);
+            Uri oldUri = uriRegistry.remove(oldToken);
+            if (oldUri != null && !oldUri.equals(uri) && !uriRegistry.containsValue(oldUri)) {
+                removePendingAudioForOwner(oldUri.toString());
+            }
         }
         String token = UUID.randomUUID().toString().replace("-", "");
         uriRegistry.put(token, uri);
@@ -101,13 +107,27 @@ public class LocalRangeProxyServer {
     }
 
     /**
-     * 注册一次性音频 PCM 二进制载荷并返回本地读取 URL
+     * 注册一次性音频 PCM 二进制载荷并返回本地读取 URL（同属主覆盖时清理前次未消费载荷）
      */
-    public String registerAudioPcm(byte[] pcmInt16Le, int sampleRate, double durationSec) throws IOException {
+    public String registerAudioPcm(String ownerKey, byte[] pcmInt16Le, int sampleRate, double durationSec) throws IOException {
         int activePort = ensureStarted();
+        if (ownerKey != null && !ownerKey.isEmpty()) {
+            removePendingAudioForOwner(ownerKey);
+        }
         String token = UUID.randomUUID().toString().replace("-", "");
-        audioPcmRegistry.put(token, new AudioPcmPayload(pcmInt16Le, sampleRate, durationSec));
+        audioPcmRegistry.put(token, new AudioPcmPayload(ownerKey, pcmInt16Le, sampleRate, durationSec));
+        if (ownerKey != null && !ownerKey.isEmpty()) {
+            audioOwnerTokenMap.put(ownerKey, token);
+        }
         return "http://127.0.0.1:" + activePort + "/audio/" + token;
+    }
+
+    private void removePendingAudioForOwner(String ownerKey) {
+        if (ownerKey == null || ownerKey.isEmpty()) return;
+        String prevToken = audioOwnerTokenMap.remove(ownerKey);
+        if (prevToken != null) {
+            audioPcmRegistry.remove(prevToken);
+        }
     }
 
     /**
@@ -118,6 +138,7 @@ public class LocalRangeProxyServer {
         uriRegistry.clear();
         channelTokenMap.clear();
         audioPcmRegistry.clear();
+        audioOwnerTokenMap.clear();
         if (serverSocket != null) {
             try {
                 serverSocket.close();
@@ -188,6 +209,9 @@ public class LocalRangeProxyServer {
                 if (payload == null) {
                     writeSimpleStatus(out, "404 Not Found");
                     return;
+                }
+                if ("GET".equals(method) && payload.ownerKey != null && !payload.ownerKey.isEmpty()) {
+                    audioOwnerTokenMap.remove(payload.ownerKey, audioToken);
                 }
                 StringBuilder audioHeaders = new StringBuilder();
                 audioHeaders.append("HTTP/1.1 200 OK\r\n");

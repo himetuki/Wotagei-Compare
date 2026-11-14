@@ -19,6 +19,9 @@ import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
+import java.io.File;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -37,13 +40,43 @@ import java.util.concurrent.atomic.AtomicBoolean;
 )
 public class NativeMediaPlugin extends Plugin {
     private LocalRangeProxyServer proxyServer;
+    private final Map<Integer, ChannelUriGrant> channelUriMap = new ConcurrentHashMap<>();
     private final ExecutorService audioExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService exportExecutor = Executors.newSingleThreadExecutor();
     private final AtomicBoolean exportCancelFlag = new AtomicBoolean(false);
 
+    static class ChannelUriGrant {
+        final Uri uri;
+        final int flags;
+
+        ChannelUriGrant(Uri uri, int flags) {
+            this.uri = uri;
+            this.flags = flags;
+        }
+    }
+
     @Override
     public void load() {
+        cleanupStaleExportTempFiles(getContext().getCacheDir());
         proxyServer = new LocalRangeProxyServer(getContext());
+    }
+
+    /**
+     * 启动时清扫因导出过程中闪退或强杀遗留的历史临时合成文件
+     */
+    static void cleanupStaleExportTempFiles(File cacheDir) {
+        if (cacheDir == null || !cacheDir.isDirectory()) return;
+        File[] files = cacheDir.listFiles();
+        if (files == null) return;
+        for (File file : files) {
+            if (file.isFile()) {
+                String name = file.getName();
+                if (name.startsWith("wotagei_export_") && name.endsWith(".mp4")) {
+                    //noinspection ResultOfMethodCallIgnored
+                    file.delete();
+                }
+            }
+        }
     }
 
     @Override
@@ -51,11 +84,33 @@ public class NativeMediaPlugin extends Plugin {
         exportCancelFlag.set(true);
         audioExecutor.shutdownNow();
         exportExecutor.shutdownNow();
+        if (getContext() != null) {
+            ContentResolver resolver = getContext().getContentResolver();
+            for (Integer ch : channelUriMap.keySet().toArray(new Integer[0])) {
+                ChannelUriGrant grant = channelUriMap.remove(ch);
+                if (grant != null && !isUriStillActive(channelUriMap, grant.uri)) {
+                    try {
+                        resolver.releasePersistableUriPermission(grant.uri, grant.flags);
+                    } catch (Exception ignored) {}
+                }
+            }
+        }
+        channelUriMap.clear();
         if (proxyServer != null) {
             proxyServer.shutdown();
             proxyServer = null;
         }
         super.handleOnDestroy();
+    }
+
+    static boolean isUriStillActive(Map<Integer, ChannelUriGrant> map, Uri targetUri) {
+        if (targetUri == null) return false;
+        for (ChannelUriGrant grant : map.values()) {
+            if (grant != null && targetUri.equals(grant.uri)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -92,11 +147,11 @@ public class NativeMediaPlugin extends Plugin {
         int channel = call.getInt("channel", 1);
         ContentResolver resolver = getContext().getContentResolver();
 
+        int takeFlags = result.getData().getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION;
+        if (takeFlags == 0) {
+            takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION;
+        }
         try {
-            int takeFlags = result.getData().getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION;
-            if (takeFlags == 0) {
-                takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION;
-            }
             resolver.takePersistableUriPermission(uri, takeFlags);
         } catch (Exception ignored) {
             // 部分第三方 Provider 不支持持久化授权，会话内临时读取授权依然有效
@@ -107,6 +162,12 @@ public class NativeMediaPlugin extends Plugin {
                 proxyServer = new LocalRangeProxyServer(getContext());
             }
             String streamUrl = proxyServer.registerChannelUri(channel, uri);
+            ChannelUriGrant oldGrant = channelUriMap.put(channel, new ChannelUriGrant(uri, takeFlags));
+            if (oldGrant != null && !oldGrant.uri.equals(uri) && !isUriStillActive(channelUriMap, oldGrant.uri)) {
+                try {
+                    resolver.releasePersistableUriPermission(oldGrant.uri, oldGrant.flags);
+                } catch (Exception ignored) {}
+            }
 
             String name = "video_" + channel + ".mp4";
             long size = 0;
@@ -207,6 +268,7 @@ public class NativeMediaPlugin extends Plugin {
                         proxyServer = new LocalRangeProxyServer(getContext());
                     }
                     String pcmUrl = proxyServer.registerAudioPcm(
+                        uriStr,
                         ext.pcmInt16Le,
                         ext.sampleRate,
                         ext.durationSec

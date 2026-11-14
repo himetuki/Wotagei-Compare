@@ -73,6 +73,14 @@ export const ExportPage: React.FC<ExportPageProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const nativeAndroid = isNativeAndroid();
 
+  useEffect(() => {
+    return () => {
+      if (downloadUrl && downloadUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(downloadUrl);
+      }
+    };
+  }, [downloadUrl]);
+
   const exporterRef = useRef<VideoExporter | null>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
   const trackRef = useRef<HTMLDivElement>(null);

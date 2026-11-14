@@ -118,6 +118,10 @@ export const ImportStep: React.FC<ImportStepProps> = ({
   const fileInputRef2 = useRef<HTMLInputElement>(null);
   const probeHostRef = useRef<HTMLDivElement>(null);
   const pickingRef = useRef<boolean>(false);
+  const activeBlobUrlsRef = useRef<{ 1?: string; 2?: string }>({
+    1: initialVideo1?.url,
+    2: initialVideo2?.url,
+  });
 
   /**
    * 构造通道默认几何参数
@@ -266,6 +270,11 @@ export const ImportStep: React.FC<ImportStepProps> = ({
     if (!file) return;
 
     const url = URL.createObjectURL(file);
+    const prevUrl = activeBlobUrlsRef.current[index];
+    if (prevUrl && prevUrl.startsWith('blob:') && prevUrl !== url) {
+      URL.revokeObjectURL(prevUrl);
+    }
+    activeBlobUrlsRef.current[index] = url;
 
     // 1. 乐观即时挂载：一旦拿到 File 对象立即更新卡片 UI，消除界面假死与「未载入」停滞
     const baseItem: LoadedVideoItem = {
