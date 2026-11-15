@@ -4,12 +4,17 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.ContentResolver;
 import android.content.Intent;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Build;
 import android.provider.OpenableColumns;
+import android.provider.Settings;
 import androidx.activity.result.ActivityResult;
+import androidx.core.content.FileProvider;
+import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
@@ -19,12 +24,21 @@ import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 /**
  * 原生媒体选择、本地流式代理与 GPU 离线导出插件入口
@@ -43,7 +57,9 @@ public class NativeMediaPlugin extends Plugin {
     private final Map<Integer, ChannelUriGrant> channelUriMap = new ConcurrentHashMap<>();
     private final ExecutorService audioExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService exportExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService updateExecutor = Executors.newSingleThreadExecutor();
     private final AtomicBoolean exportCancelFlag = new AtomicBoolean(false);
+    private volatile File pendingInstallApkFile = null;
 
     static class ChannelUriGrant {
         final Uri uri;
@@ -57,7 +73,9 @@ public class NativeMediaPlugin extends Plugin {
 
     @Override
     public void load() {
-        cleanupStaleExportTempFiles(getContext().getCacheDir());
+        File cacheDir = getContext().getCacheDir();
+        cleanupStaleExportTempFiles(cacheDir);
+        cleanupStaleUpdateApkFiles(cacheDir);
         proxyServer = new LocalRangeProxyServer(getContext());
     }
 
@@ -79,11 +97,30 @@ public class NativeMediaPlugin extends Plugin {
         }
     }
 
+    /**
+     * 清扫端内更新下载遗留的 APK 安装包（冷启动、重下载前及取消安装后调用）
+     */
+    static void cleanupStaleUpdateApkFiles(File cacheDir) {
+        if (cacheDir == null || !cacheDir.isDirectory()) return;
+        File[] files = cacheDir.listFiles();
+        if (files == null) return;
+        for (File file : files) {
+            if (file.isFile()) {
+                String name = file.getName();
+                if (name.startsWith("wotagei_update_") && name.endsWith(".apk")) {
+                    //noinspection ResultOfMethodCallIgnored
+                    file.delete();
+                }
+            }
+        }
+    }
+
     @Override
     protected void handleOnDestroy() {
         exportCancelFlag.set(true);
         audioExecutor.shutdownNow();
         exportExecutor.shutdownNow();
+        updateExecutor.shutdownNow();
         if (getContext() != null) {
             ContentResolver resolver = getContext().getContentResolver();
             for (Integer ch : channelUriMap.keySet().toArray(new Integer[0])) {
@@ -388,5 +425,361 @@ public class NativeMediaPlugin extends Plugin {
             (float) rectObj.optDouble("w", 1.0),
             (float) rectObj.optDouble("h", 1.0)
         );
+    }
+
+    /**
+     * 读取当前安装包真实版本号与 versionCode
+     */
+    @PluginMethod
+    @SuppressWarnings("deprecation")
+    public void getAppVersion(PluginCall call) {
+        try {
+            PackageManager pm = getContext().getPackageManager();
+            PackageInfo info = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                ? pm.getPackageInfo(
+                    getContext().getPackageName(),
+                    PackageManager.PackageInfoFlags.of(0)
+                )
+                : pm.getPackageInfo(getContext().getPackageName(), 0);
+            JSObject res = new JSObject();
+            res.put("versionName", info.versionName != null ? info.versionName : "1.0.0");
+            long code = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+                ? info.getLongVersionCode()
+                : info.versionCode;
+            res.put("versionCode", code);
+            call.resolve(res);
+        } catch (Exception e) {
+            JSObject fallback = new JSObject();
+            fallback.put("versionName", "1.0.0");
+            fallback.put("versionCode", 1);
+            call.resolve(fallback);
+        }
+    }
+
+    /**
+     * 拉起系统浏览器访问 GitHub 仓库或 Releases 页面
+     */
+    @PluginMethod
+    public void openExternalUrl(PluginCall call) {
+        String url = call.getString("url", "");
+        if (url == null || (!url.startsWith("http://") && !url.startsWith("https://"))) {
+            call.reject("无效的外部链接地址");
+            return;
+        }
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(intent);
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("无法拉起系统浏览器: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 原生查询 GitHub Releases 最新版本元数据（规避旧版 WebView TLS/CORS 限制）
+     */
+    @PluginMethod
+    public void checkLatestRelease(PluginCall call) {
+        updateExecutor.execute(() -> {
+            HttpURLConnection conn = null;
+            try {
+                conn = openConnectionWithRedirects(
+                    "https://api.github.com/repos/jollyxenon/Wotagei-Compare/releases/latest",
+                    "application/vnd.github+json",
+                    15000
+                );
+                int status = conn.getResponseCode();
+                if (status == 404) {
+                    call.reject("暂未在 GitHub Releases 找到已发布的正式版本");
+                    return;
+                }
+                if (status == 403 || status == 429) {
+                    call.reject("GitHub 接口请求受限，请稍后重试或前往 Releases 页面查看");
+                    return;
+                }
+                if (status < 200 || status >= 300) {
+                    call.reject("检查更新失败（HTTP " + status + "）");
+                    return;
+                }
+
+                StringBuilder sb = new StringBuilder();
+                try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8)
+                )) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        sb.append(line);
+                    }
+                }
+
+                JSONObject json = new JSONObject(sb.toString());
+                JSObject result = new JSObject();
+                result.put("tagName", json.optString("tag_name", ""));
+                result.put("name", json.optString("name", ""));
+                result.put("body", json.optString("body", ""));
+                result.put(
+                    "htmlUrl",
+                    json.optString(
+                        "html_url",
+                        "https://github.com/jollyxenon/Wotagei-Compare/releases"
+                    )
+                );
+                result.put("publishedAt", json.optString("published_at", ""));
+
+                JSArray assetsArr = new JSArray();
+                JSONArray rawAssets = json.optJSONArray("assets");
+                if (rawAssets != null) {
+                    for (int i = 0; i < rawAssets.length(); i++) {
+                        JSONObject item = rawAssets.optJSONObject(i);
+                        if (item == null) continue;
+                        JSObject mapped = new JSObject();
+                        mapped.put("name", item.optString("name", ""));
+                        mapped.put("browserDownloadUrl", item.optString("browser_download_url", ""));
+                        mapped.put("size", item.optLong("size", 0L));
+                        mapped.put("contentType", item.optString("content_type", ""));
+                        assetsArr.put(mapped);
+                    }
+                }
+                result.put("assets", assetsArr);
+                call.resolve(result);
+            } catch (Exception e) {
+                call.reject(
+                    "网络检查更新失败: " + (e.getMessage() != null ? e.getMessage() : "未知错误"),
+                    e
+                );
+            } finally {
+                if (conn != null) {
+                    conn.disconnect();
+                }
+            }
+        });
+    }
+
+    /**
+     * 端内下载目标 APK 安装包到 cacheDir 并唤起系统安装器（自动先清扫历史 APK）
+     */
+    @PluginMethod
+    public void downloadAndInstallApk(PluginCall call) {
+        String downloadUrl = call.getString("url", "");
+        String versionRaw = call.getString("version", "latest");
+        if (
+            downloadUrl == null
+                || (!downloadUrl.startsWith("https://") && !downloadUrl.startsWith("http://"))
+        ) {
+            call.reject("无效的 APK 下载地址");
+            return;
+        }
+
+        String safeVer = (versionRaw != null ? versionRaw : "latest").replaceAll("[^0-9A-Za-z._-]", "_");
+        if (safeVer.isEmpty()) {
+            safeVer = "latest";
+        }
+        String fileName = "wotagei_update_" + safeVer + ".apk";
+
+        updateExecutor.execute(() -> {
+            File cacheDir = getContext().getCacheDir();
+            cleanupStaleUpdateApkFiles(cacheDir);
+            File apkFile = new File(cacheDir, fileName);
+
+            HttpURLConnection conn = null;
+            try {
+                emitUpdateDownloadProgress(0, 0, 0, "正在连接更新下载源...");
+                conn = openConnectionWithRedirects(downloadUrl, "application/octet-stream", 60000);
+                int status = conn.getResponseCode();
+                if (status < 200 || status >= 300) {
+                    call.reject("下载安装包失败（HTTP " + status + "）");
+                    return;
+                }
+
+                long totalBytes = conn.getContentLengthLong();
+                long downloadedBytes = 0;
+                int lastEmittedPercent = -1;
+                long lastEmitTimeMs = 0L;
+
+                try (
+                    InputStream in = conn.getInputStream();
+                    FileOutputStream out = new FileOutputStream(apkFile, false)
+                ) {
+                    byte[] buffer = new byte[16384];
+                    int read;
+                    while ((read = in.read(buffer)) != -1) {
+                        out.write(buffer, 0, read);
+                        downloadedBytes += read;
+                        int percent = totalBytes > 0
+                            ? (int) Math.min(99L, (downloadedBytes * 100L) / totalBytes)
+                            : 0;
+                        long nowMs = System.currentTimeMillis();
+                        if (percent != lastEmittedPercent && nowMs - lastEmitTimeMs >= 120L) {
+                            lastEmittedPercent = percent;
+                            lastEmitTimeMs = nowMs;
+                            String statusText = totalBytes > 0
+                                ? String.format("正在下载安装包 %d%%", percent)
+                                : String.format("已下载 %.1f MB", downloadedBytes / (1024.0 * 1024.0));
+                            emitUpdateDownloadProgress(percent, downloadedBytes, totalBytes, statusText);
+                        }
+                    }
+                    out.flush();
+                }
+
+                emitUpdateDownloadProgress(100, downloadedBytes, downloadedBytes, "下载完成，准备安装...");
+                pendingInstallApkFile = apkFile;
+
+                Activity activity = getActivity();
+                if (activity == null) {
+                    cleanupStaleUpdateApkFiles(cacheDir);
+                    pendingInstallApkFile = null;
+                    call.reject("当前页面不可用，无法拉起系统安装界面");
+                    return;
+                }
+                activity.runOnUiThread(() -> proceedToInstallApk(call, apkFile));
+            } catch (Exception e) {
+                if (apkFile.exists()) {
+                    //noinspection ResultOfMethodCallIgnored
+                    apkFile.delete();
+                }
+                pendingInstallApkFile = null;
+                call.reject(
+                    "下载更新包失败: " + (e.getMessage() != null ? e.getMessage() : "网络异常"),
+                    e
+                );
+            } finally {
+                if (conn != null) {
+                    conn.disconnect();
+                }
+            }
+        });
+    }
+
+    private void proceedToInstallApk(PluginCall call, File apkFile) {
+        if (apkFile == null || !apkFile.exists()) {
+            call.reject("安装文件不存在或已被清理");
+            return;
+        }
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                && !getContext().getPackageManager().canRequestPackageInstalls()
+        ) {
+            Intent permIntent = new Intent(
+                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:" + getContext().getPackageName())
+            );
+            startActivityForResult(call, permIntent, "handleUnknownSourcePermissionResult");
+            return;
+        }
+        launchApkInstaller(call, apkFile);
+    }
+
+    @ActivityCallback
+    private void handleUnknownSourcePermissionResult(PluginCall call, ActivityResult result) {
+        if (call == null) return;
+        File apkFile = pendingInstallApkFile;
+        boolean granted =
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.O
+                || getContext().getPackageManager().canRequestPackageInstalls();
+        if (granted && apkFile != null && apkFile.exists()) {
+            launchApkInstaller(call, apkFile);
+            return;
+        }
+
+        cleanupStaleUpdateApkFiles(getContext().getCacheDir());
+        pendingInstallApkFile = null;
+        JSObject res = new JSObject();
+        res.put("status", "permission_required");
+        res.put("message", "未授予“安装未知应用”权限，请授权后重新尝试更新");
+        call.resolve(res);
+    }
+
+    private void launchApkInstaller(PluginCall call, File apkFile) {
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            Uri apkUri;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                apkUri = FileProvider.getUriForFile(
+                    getContext(),
+                    getContext().getPackageName() + ".fileprovider",
+                    apkFile
+                );
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } else {
+                // Android 6.0 无 FileProvider 授权机制，需对系统安装器开放临时可读
+                //noinspection ResultOfMethodCallIgnored
+                apkFile.setReadable(true, false);
+                apkUri = Uri.fromFile(apkFile);
+            }
+            intent.setDataAndType(apkUri, "application/vnd.android.package-archive");
+            intent.putExtra(Intent.EXTRA_RETURN_RESULT, true);
+            startActivityForResult(call, intent, "handleInstallApkResult");
+        } catch (Exception e) {
+            cleanupStaleUpdateApkFiles(getContext().getCacheDir());
+            pendingInstallApkFile = null;
+            call.reject("无法唤起系统安装器: " + e.getMessage(), e);
+        }
+    }
+
+    @ActivityCallback
+    private void handleInstallApkResult(PluginCall call, ActivityResult result) {
+        // 若用户取消安装、校验失败或退出系统安装器，立即回收临时安装包避免占用缓存
+        cleanupStaleUpdateApkFiles(getContext().getCacheDir());
+        pendingInstallApkFile = null;
+        if (call == null) return;
+
+        JSObject res = new JSObject();
+        if (result.getResultCode() == Activity.RESULT_OK) {
+            res.put("status", "installer_launched");
+        } else {
+            res.put("status", "cancelled");
+            res.put("message", "已取消安装或安装未完成，临时安装包已自动清理");
+        }
+        call.resolve(res);
+    }
+
+    private void emitUpdateDownloadProgress(
+        int percent,
+        long downloadedBytes,
+        long totalBytes,
+        String statusText
+    ) {
+        JSObject ev = new JSObject();
+        ev.put("percent", percent);
+        ev.put("downloadedBytes", downloadedBytes);
+        ev.put("totalBytes", totalBytes);
+        ev.put("statusText", statusText);
+        notifyListeners("updateDownloadProgress", ev);
+    }
+
+    private HttpURLConnection openConnectionWithRedirects(
+        String startUrl,
+        String acceptHeader,
+        int readTimeoutMs
+    ) throws Exception {
+        String currentUrl = startUrl;
+        for (int hops = 0; hops < 6; hops++) {
+            HttpURLConnection conn = (HttpURLConnection) new URL(currentUrl).openConnection();
+            conn.setInstanceFollowRedirects(false);
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(readTimeoutMs);
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("Accept", acceptHeader);
+            conn.setRequestProperty("User-Agent", "Wotagei-Compare-Android");
+            int code = conn.getResponseCode();
+            if (
+                code == HttpURLConnection.HTTP_MOVED_PERM
+                    || code == HttpURLConnection.HTTP_MOVED_TEMP
+                    || code == HttpURLConnection.HTTP_SEE_OTHER
+                    || code == 307
+                    || code == 308
+            ) {
+                String location = conn.getHeaderField("Location");
+                conn.disconnect();
+                if (location == null || location.isEmpty()) {
+                    throw new IllegalStateException("重定向缺少 Location 头");
+                }
+                currentUrl = new URL(new URL(currentUrl), location).toString();
+                continue;
+            }
+            return conn;
+        }
+        throw new IllegalStateException("更新请求重定向次数过多");
     }
 }

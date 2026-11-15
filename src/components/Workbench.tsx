@@ -32,9 +32,8 @@ import { SynthesizedMetronome } from '../core/metronome.ts';
 import { DualVideoSyncEngine } from '../core/sync-engine.ts';
 import type { LoadedVideoItem } from './ImportStep.tsx';
 import type { WizardStep } from '../types/wizard.ts';
+import type { StepPreset } from '../types/preferences.ts';
 import { ExportPage } from './ExportPage.tsx';
-
-type StepPreset = 'frame' | '50ms' | '100ms' | 'beat-quarter' | 'beat-half' | 'custom';
 
 export interface WorkbenchProps {
   video1: LoadedVideoItem;
@@ -42,6 +41,10 @@ export interface WorkbenchProps {
   initialMode: ComparisonMode;
   bpmStrategy: BpmAlignStrategy;
   customBpm: number;
+  soundSource?: SoundSource;
+  slowMotionRate?: SlowMotionRate;
+  stepPreset?: StepPreset;
+  customStepSec?: number;
   isExport?: boolean;
   isToolbarExpanded?: boolean;
   loopRange?: TimeInterval | null;
@@ -50,6 +53,10 @@ export interface WorkbenchProps {
   onNavigate?: (step: WizardStep) => void;
   onBpmStrategyChange?: (strategy: BpmAlignStrategy, customBpm?: number) => void;
   onModeChange?: (mode: ComparisonMode) => void;
+  onSoundSourceChange?: (source: SoundSource) => void;
+  onSlowMotionRateChange?: (rate: SlowMotionRate) => void;
+  onStepPresetChange?: (preset: StepPreset) => void;
+  onCustomStepSecChange?: (sec: number) => void;
   onMirrorChange?: (videoIndex: 1 | 2, mirror: boolean) => void;
 }
 
@@ -85,6 +92,10 @@ export const Workbench: React.FC<WorkbenchProps> = ({
   initialMode,
   bpmStrategy,
   customBpm,
+  soundSource: soundSourceProp,
+  slowMotionRate: slowMotionRateProp,
+  stepPreset: stepPresetProp,
+  customStepSec: customStepSecProp,
   isExport = false,
   isToolbarExpanded = false,
   loopRange,
@@ -93,6 +104,10 @@ export const Workbench: React.FC<WorkbenchProps> = ({
   onNavigate,
   onBpmStrategyChange,
   onModeChange,
+  onSoundSourceChange,
+  onSlowMotionRateChange,
+  onStepPresetChange,
+  onCustomStepSecChange,
   onMirrorChange,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -111,14 +126,56 @@ export const Workbench: React.FC<WorkbenchProps> = ({
 
   const [mode, setMode] = useState<ComparisonMode>(initialMode);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
-  const [slowMotionRate, setSlowMotionRate] = useState<SlowMotionRate>(1.0);
-  const [soundSource, setSoundSource] = useState<SoundSource>('metronome');
+  const [internalSlowMotionRate, setInternalSlowMotionRate] = useState<SlowMotionRate>(1.0);
+  const [internalSoundSource, setInternalSoundSource] = useState<SoundSource>('metronome');
   const [relativeOpacity, setRelativeOpacity] = useState<number>(0);
   const [openPopup, setOpenPopup] = useState<'step' | 'rate' | 'bpm' | null>(null);
-  const [stepPreset, setStepPreset] = useState<StepPreset>('frame');
-  const [customStepSec, setCustomStepSec] = useState<number>(0.033);
-  const [customStepInputText, setCustomStepInputText] = useState<string>('0.033');
+  const [internalStepPreset, setInternalStepPreset] = useState<StepPreset>('frame');
+  const [internalCustomStepSec, setInternalCustomStepSec] = useState<number>(0.033);
+
+  const slowMotionRate = slowMotionRateProp ?? internalSlowMotionRate;
+  const soundSource = soundSourceProp ?? internalSoundSource;
+  const stepPreset = stepPresetProp ?? internalStepPreset;
+  const customStepSec = customStepSecProp ?? internalCustomStepSec;
+
+  const [customStepInputText, setCustomStepInputText] = useState<string>(() =>
+    (customStepSecProp ?? 0.033).toFixed(3)
+  );
+  const isEditingCustomStepRef = useRef<boolean>(false);
   const [internalLoopRange, setInternalLoopRange] = useState<TimeInterval | null>(null);
+
+  useEffect(() => {
+    setMode(initialMode);
+  }, [initialMode]);
+
+  useEffect(() => {
+    if (!isEditingCustomStepRef.current) {
+      setCustomStepInputText(customStepSec.toFixed(3));
+    }
+  }, [customStepSec]);
+
+  const updateSoundSource = (next: SoundSource) => {
+    setInternalSoundSource(next);
+    onSoundSourceChange?.(next);
+  };
+
+  const updateStepPreset = (next: StepPreset) => {
+    setInternalStepPreset(next);
+    onStepPresetChange?.(next);
+  };
+
+  const updateCustomStepSec = (next: number) => {
+    setInternalCustomStepSec(next);
+    onCustomStepSecChange?.(next);
+  };
+
+  const commitCustomStepInput = () => {
+    isEditingCustomStepRef.current = false;
+    const val = parseFloat(customStepInputText);
+    const clamped = !isNaN(val) ? Math.max(0.005, val) : customStepSec;
+    updateCustomStepSec(clamped);
+    setCustomStepInputText(clamped.toFixed(3));
+  };
 
   const activeLoopRange = loopRange !== undefined ? loopRange : internalLoopRange;
   const updateLoopRange = (next: TimeInterval | null) => {
@@ -428,7 +485,8 @@ export const Workbench: React.FC<WorkbenchProps> = ({
    * 切换七档慢放倍率
    */
   const handleRateChange = (rate: SlowMotionRate) => {
-    setSlowMotionRate(rate);
+    setInternalSlowMotionRate(rate);
+    onSlowMotionRateChange?.(rate);
     engineRef.current?.updateConfig({ slowMotionRate: rate });
   };
 
@@ -816,7 +874,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
                   key={item.id}
                   type="button"
                   onClick={() => {
-                    setSoundSource(item.id);
+                    updateSoundSource(item.id);
                     if (item.id === 'metronome') {
                       metronomeRef.current.reset(tauRef.current, timeline.effectiveBpm);
                     }
@@ -1087,7 +1145,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
                         key={opt.id}
                         type="button"
                         onClick={() => {
-                          setStepPreset(opt.id);
+                          updateStepPreset(opt.id);
                           if (opt.id !== 'custom') {
                             setOpenPopup(null);
                           }
@@ -1109,18 +1167,22 @@ export const Workbench: React.FC<WorkbenchProps> = ({
                         min="0.005"
                         className="num-input"
                         value={customStepInputText}
+                        onFocus={() => {
+                          isEditingCustomStepRef.current = true;
+                        }}
                         onChange={(e) => {
                           setCustomStepInputText(e.target.value);
                           const val = parseFloat(e.target.value);
                           if (!isNaN(val) && val >= 0.005) {
-                            setCustomStepSec(val);
+                            updateCustomStepSec(val);
                           }
                         }}
-                        onBlur={() => {
-                          const val = parseFloat(customStepInputText);
-                          const clamped = !isNaN(val) ? Math.max(0.005, val) : customStepSec;
-                          setCustomStepSec(clamped);
-                          setCustomStepInputText(clamped.toFixed(3));
+                        onBlur={commitCustomStepInput}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            commitCustomStepInput();
+                            e.currentTarget.blur();
+                          }
                         }}
                         style={{ width: '64px', height: '22px', fontSize: '11px' }}
                       />

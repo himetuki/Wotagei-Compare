@@ -774,6 +774,364 @@ body,
   margin-top: 5px;
 }
 
+.fx-col-6 > * + * {
+  margin-top: 6px;
+}
+
+.fx-col-8 > * + * {
+  margin-top: 8px;
+}
+
+/* 顶栏软件图标入口与灰色分隔竖线 */
+.nav-brand-btn {
+  width: 28px;
+  height: 28px;
+  padding: 2px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background-color: var(--bg-surface);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color 0.12s, background-color 0.12s, box-shadow 0.12s;
+}
+
+.nav-brand-btn:hover {
+  border-color: var(--border-strong);
+  background-color: var(--bg-elevated);
+}
+
+.nav-brand-btn.active {
+  border-color: var(--accent);
+  background-color: var(--accent-bg);
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.35);
+}
+
+.nav-brand-divider {
+  width: 1px;
+  height: 18px;
+  background-color: var(--border-strong);
+  flex-shrink: 0;
+}
+
+/* 设置与关于视图 */
+.settings-page {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 14px;
+  background-color: var(--bg-canvas);
+  overflow: hidden;
+}
+
+.settings-page > * + * {
+  margin-top: 10px;
+}
+
+.settings-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.settings-page-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.settings-page-subtitle {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.settings-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1.35fr 1fr;
+  grid-gap: 12px;
+}
+
+.settings-card {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.settings-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.settings-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.settings-form-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 9px;
+  border-radius: 5px;
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border);
+}
+
+.settings-row > * + * {
+  margin-left: 10px;
+}
+
+.settings-row-label {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.settings-row-label > span:first-child {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.settings-row-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
+.settings-row-controls > * + * {
+  margin-left: 6px;
+}
+
+.settings-seg-wrap {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+.settings-seg-wrap > * {
+  margin: 1px;
+}
+
+.settings-seg-wrap > * + * {
+  margin-left: 1px;
+}
+
+.settings-about-card {
+  overflow-y: auto;
+}
+
+.settings-about-hero {
+  display: flex;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 5px;
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border);
+}
+
+.settings-about-hero > * + * {
+  margin-left: 10px;
+}
+
+.settings-about-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-about-meta > * + * {
+  margin-top: 4px;
+}
+
+.settings-app-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.settings-about-desc {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.settings-links-row,
+.settings-update-actions {
+  display: flex;
+  align-items: center;
+}
+
+.settings-links-row > * + *,
+.settings-update-actions > * + * {
+  margin-left: 8px;
+}
+
+.settings-update-box {
+  padding: 9px 10px;
+  border-radius: 5px;
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-update-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.settings-progress-wrap {
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-progress-wrap > * + * {
+  margin-top: 4px;
+}
+
+.settings-progress-track {
+  height: 6px;
+  border-radius: 3px;
+  background-color: var(--bg-canvas);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.settings-progress-fill {
+  height: 100%;
+  background-color: var(--accent);
+  transition: width 0.15s ease-out;
+}
+
+.settings-status-banner {
+  display: flex;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 11.5px;
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  color: var(--text-primary);
+}
+
+.settings-status-banner > * + * {
+  margin-left: 6px;
+}
+
+.settings-status-banner.is-ok {
+  border-color: rgba(16, 185, 129, 0.45);
+  color: var(--ch2);
+}
+
+.settings-status-banner.is-warn {
+  border-color: rgba(245, 158, 11, 0.45);
+  color: var(--accent);
+}
+
+.settings-release-notes {
+  padding: 7px 8px;
+  border-radius: 4px;
+  background-color: var(--bg-canvas);
+  border: 1px solid var(--border);
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.settings-release-notes-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+@keyframes wotagei-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spin-icon {
+  animation: wotagei-spin 1s linear infinite;
+}
+
+@media (max-width: 760px), (max-height: 420px) {
+  .nav-brand-btn {
+    width: 24px;
+    height: 24px;
+    padding: 1px;
+  }
+
+  .nav-brand-divider {
+    height: 14px;
+  }
+
+  .settings-page {
+    padding: 6px 8px;
+    overflow-y: auto;
+  }
+
+  .settings-page > * + * {
+    margin-top: 6px;
+  }
+
+  .settings-page-subtitle {
+    display: none;
+  }
+
+  .settings-grid {
+    grid-template-columns: 1.25fr 1fr;
+    grid-gap: 8px;
+    flex: 0 0 auto;
+  }
+
+  .settings-row {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 6px 7px;
+  }
+
+  .settings-row > * + * {
+    margin-left: 0;
+    margin-top: 5px;
+  }
+
+  .settings-row-controls {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 540px) {
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* 16:9 经典窄屏横屏（如 640x360 + 金刚键）紧凑自适应规则 */
 @media (max-width: 760px) {
   .top-nav > * + * {

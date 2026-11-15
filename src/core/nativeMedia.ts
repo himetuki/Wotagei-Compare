@@ -70,14 +70,55 @@ export interface NativeExportResult {
   durationSec: number;
 }
 
+export interface NativeReleaseAsset {
+  name: string;
+  browserDownloadUrl: string;
+  size: number;
+  contentType: string;
+}
+
+export interface NativeReleaseCheckResult {
+  tagName: string;
+  name: string;
+  body: string;
+  htmlUrl: string;
+  publishedAt: string;
+  assets: NativeReleaseAsset[];
+}
+
+export interface NativeUpdateDownloadProgressEvent {
+  percent: number;
+  downloadedBytes: number;
+  totalBytes: number;
+  statusText: string;
+}
+
+export interface NativeAppVersionResult {
+  versionName: string;
+  versionCode: number;
+}
+
+export interface NativeInstallApkResult {
+  status: 'installer_launched' | 'permission_required' | 'cancelled';
+  message?: string;
+}
+
 export interface NativeMediaPlugin {
   pickVideo(options: { channel: 1 | 2 }): Promise<NativePickVideoResult>;
   extractAudioAnalysis(options: { uri: string }): Promise<NativeExtractAudioResult>;
   exportVideo(options: NativeExportRequest): Promise<NativeExportResult>;
   cancelExport(): Promise<void>;
+  getAppVersion(): Promise<NativeAppVersionResult>;
+  checkLatestRelease(): Promise<NativeReleaseCheckResult>;
+  downloadAndInstallApk(options: { url: string; version: string }): Promise<NativeInstallApkResult>;
+  openExternalUrl(options: { url: string }): Promise<void>;
   addListener(
     eventName: 'exportProgress',
     listenerFunc: (event: NativeExportProgressEvent) => void
+  ): Promise<PluginListenerHandle>;
+  addListener(
+    eventName: 'updateDownloadProgress',
+    listenerFunc: (event: NativeUpdateDownloadProgressEvent) => void
   ): Promise<PluginListenerHandle>;
 }
 

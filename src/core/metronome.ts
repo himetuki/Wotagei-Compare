@@ -76,6 +76,17 @@ export class SynthesizedMetronome {
   }
 
   /**
+   * 在用户交互手势内提前唤醒音频上下文
+   */
+  public unlock(): void {
+    try {
+      this.ensureContext();
+    } catch {
+      // 容灾忽略静默降级
+    }
+  }
+
+  /**
    * 重置节拍索引 (例如拖动时间轴 seek 或从指定时刻起播时调用)
    */
   public reset(currentTau: number, targetBpm: number): void {

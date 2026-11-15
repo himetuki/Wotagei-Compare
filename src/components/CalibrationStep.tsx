@@ -17,6 +17,7 @@ import type {
 import type { VideoAudioInfo, TimeInterval } from '../types/timeline.ts';
 import type { LoadedVideoItem } from './ImportStep.tsx';
 import { TapTempoTracker, detectBpmFromSlice } from '../core/audio.ts';
+import { SynthesizedMetronome } from '../core/metronome.ts';
 
 interface CalibrationStepProps {
   videoItem: LoadedVideoItem;
@@ -90,8 +91,62 @@ export const CalibrationStep: React.FC<CalibrationStepProps> = ({
   const tapTrackerRef = useRef<TapTempoTracker>(new TapTempoTracker());
   const [tapActive, setTapActive] = useState<boolean>(false);
   const [isScrubbingWaveform, setIsScrubbingWaveform] = useState<boolean>(false);
-  const auditionAudioCtxRef = useRef<AudioContext | null>(null);
-  const auditionTimerRef = useRef<number | null>(null);
+  const AUDITION_VIDEO_VOLUME = 0.3;
+  const metronomeRef = useRef<SynthesizedMetronome | null>(null);
+  const auditionRestoreTimerRef = useRef<number | null>(null);
+  const auditionVolumeRafRef = useRef<number | null>(null);
+  const auditionPendingRef = useRef<{
+    armed: boolean;
+    anchor: number;
+    observedPreAnchor: boolean;
+  }>({ armed: false, anchor: 1.0, observedPreAnchor: false });
+
+  const getMetronome = () => {
+    if (!metronomeRef.current) {
+      metronomeRef.current = new SynthesizedMetronome();
+    }
+    return metronomeRef.current;
+  };
+
+  const restoreVideoVolume = (immediate: boolean = true) => {
+    if (auditionRestoreTimerRef.current) {
+      window.clearTimeout(auditionRestoreTimerRef.current);
+      auditionRestoreTimerRef.current = null;
+    }
+    if (auditionVolumeRafRef.current) {
+      cancelAnimationFrame(auditionVolumeRafRef.current);
+      auditionVolumeRafRef.current = null;
+    }
+    const video = videoRef.current;
+    if (!video) return;
+    if (immediate) {
+      video.volume = 1.0;
+      return;
+    }
+    const startVol = video.volume;
+    const startTs = performance.now();
+    const durationMs = 180;
+    const step = (now: number) => {
+      const targetVideo = videoRef.current;
+      if (!targetVideo) {
+        auditionVolumeRafRef.current = null;
+        return;
+      }
+      const progress = Math.min(1, (now - startTs) / durationMs);
+      targetVideo.volume = startVol + (1.0 - startVol) * progress;
+      if (progress < 1) {
+        auditionVolumeRafRef.current = requestAnimationFrame(step);
+      } else {
+        auditionVolumeRafRef.current = null;
+      }
+    };
+    auditionVolumeRafRef.current = requestAnimationFrame(step);
+  };
+
+  const clearAuditionArm = () => {
+    auditionPendingRef.current = { armed: false, anchor: 0, observedPreAnchor: false };
+    restoreVideoVolume(true);
+  };
   const hasRealAudio = Boolean(videoItem.audioInfo && videoItem.audioInfo.rawChannelData !== undefined);
   const syncedHasAudioRef = useRef<boolean>(hasRealAudio);
   const userEditedRef = useRef<{ bpm: boolean; trim: boolean; anchor: boolean }>({
@@ -111,24 +166,23 @@ export const CalibrationStep: React.FC<CalibrationStepProps> = ({
     setTwoVOneH(videoItem.geometry.triLine.twoVOneH);
   }, [videoItem.geometry]);
 
-  // 卸载清理定时器与试听 AudioContext
+  // 卸载清理定时器与试听节拍器
   useEffect(() => {
     return () => {
       if (debounceBpmTimerRef.current) {
         window.clearTimeout(debounceBpmTimerRef.current);
       }
-      if (auditionTimerRef.current) {
-        window.clearTimeout(auditionTimerRef.current);
-      }
-      if (auditionAudioCtxRef.current && auditionAudioCtxRef.current.state !== 'closed') {
-        auditionAudioCtxRef.current.close().catch(() => {});
-        auditionAudioCtxRef.current = null;
+      clearAuditionArm();
+      if (metronomeRef.current) {
+        metronomeRef.current.dispose();
+        metronomeRef.current = null;
       }
     };
   }, []);
 
   // 切换视频通道或导入新视频源时同步恢复该视频的音频与找帧初始化
   useEffect(() => {
+    clearAuditionArm();
     const audio = videoItem.audioInfo;
     const dur = videoItem.duration > 0 ? videoItem.duration : audio?.duration || 1;
     const nextBpm = audio?.userBpm || 160;
@@ -172,7 +226,10 @@ export const CalibrationStep: React.FC<CalibrationStepProps> = ({
 
     const onTimeUpdate = () => setCurrentTime(video.currentTime);
     const onPlay = () => setIsPlaying(true);
-    const onPause = () => setIsPlaying(false);
+    const onPause = () => {
+      clearAuditionArm();
+      setIsPlaying(false);
+    };
 
     video.addEventListener('loadedmetadata', seekOnReady);
     video.addEventListener('timeupdate', onTimeUpdate);
@@ -279,11 +336,34 @@ export const CalibrationStep: React.FC<CalibrationStepProps> = ({
     const updateLoop = () => {
       const video = videoRef.current;
       if (video && !video.paused) {
-        if (video.currentTime >= trimEnd) {
+        const nowTime = video.currentTime;
+        const pending = auditionPendingRef.current;
+        if (pending.armed && !video.seeking && video.readyState >= 2) {
+          if (!pending.observedPreAnchor) {
+            if (nowTime < pending.anchor) {
+              pending.observedPreAnchor = true;
+            }
+          } else if (nowTime >= pending.anchor) {
+            pending.armed = false;
+            pending.observedPreAnchor = false;
+            getMetronome().playClick(true);
+            // 重拍响后短暂停留避让再平滑恢复视频原声，确保不与原曲抢占系统混音动态范围
+            if (auditionRestoreTimerRef.current) {
+              window.clearTimeout(auditionRestoreTimerRef.current);
+            }
+            auditionRestoreTimerRef.current = window.setTimeout(() => {
+              auditionRestoreTimerRef.current = null;
+              restoreVideoVolume(false);
+            }, 200);
+          }
+        }
+
+        if (nowTime >= trimEnd) {
+          clearAuditionArm();
           video.currentTime = trimStart;
           setCurrentTime(trimStart);
         } else {
-          setCurrentTime(video.currentTime);
+          setCurrentTime(nowTime);
         }
       }
       animId = requestAnimationFrame(updateLoop);
@@ -468,6 +548,7 @@ export const CalibrationStep: React.FC<CalibrationStepProps> = ({
   const togglePlay = () => {
     const video = videoRef.current;
     if (!video) return;
+    clearAuditionArm();
     userSeekedRef.current = true;
     video.preservesPitch = true;
     video.playbackRate = 1.0;
@@ -489,14 +570,17 @@ export const CalibrationStep: React.FC<CalibrationStepProps> = ({
   const commitAudioState = (
     nextBpm: number,
     nextAnchor: number,
-    nextTrim?: TimeInterval
+    nextTrim?: TimeInterval,
+    syncAnchorText: boolean = true
   ) => {
     const activeTrim = nextTrim || { start: trimStart, end: trimEnd };
     const clampedAnchor = Math.max(activeTrim.start, Math.min(activeTrim.end, nextAnchor));
 
     setBpm(nextBpm);
     setAnchorTime(clampedAnchor);
-    setAnchorInputText(clampedAnchor.toFixed(3));
+    if (syncAnchorText) {
+      setAnchorInputText(clampedAnchor.toFixed(3));
+    }
     if (nextTrim) {
       setTrimStart(nextTrim.start);
       setTrimEnd(nextTrim.end);
@@ -540,8 +624,23 @@ export const CalibrationStep: React.FC<CalibrationStepProps> = ({
     setCurrentTime(targetTime);
   };
 
+  const commitAnchorInput = () => {
+    const parsed = parseFloat(anchorInputText);
+    if (!isNaN(parsed)) {
+      const clamped = Math.max(trimStart, Math.min(trimEnd, parsed));
+      const formatted = clamped.toFixed(3);
+      const aligned = Math.max(trimStart, Math.min(trimEnd, parseFloat(formatted)));
+      setAnchorInputText(aligned.toFixed(3));
+      userEditedRef.current.anchor = true;
+      commitAudioState(bpm, aligned);
+    } else {
+      setAnchorInputText(anchorTime.toFixed(3));
+    }
+  };
+
   const handleWaveformPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.preventDefault();
+    clearAuditionArm();
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch {}
@@ -568,6 +667,7 @@ export const CalibrationStep: React.FC<CalibrationStepProps> = ({
   };
 
   const setAsAnchor = () => {
+    clearAuditionArm();
     const video = videoRef.current;
     const t = video ? video.currentTime : currentTime;
     const clamped = Math.max(trimStart, Math.min(trimEnd, t));
@@ -580,53 +680,25 @@ export const CalibrationStep: React.FC<CalibrationStepProps> = ({
     const video = videoRef.current;
     if (!video) return;
 
-    let ctx = auditionAudioCtxRef.current;
-    try {
-      if (!ctx || ctx.state === 'closed') {
-        const AudioCtx =
-          window.AudioContext ||
-          (window as unknown as { webkitAudioContext: typeof AudioContext })
-            .webkitAudioContext;
-        ctx = new AudioCtx();
-        auditionAudioCtxRef.current = ctx;
-      }
-      if (ctx.state === 'suspended') {
-        ctx.resume().catch(() => {});
-      }
-    } catch {
-      ctx = null;
-    }
-
+    // 在用户交互手势内预热节拍器音频上下文；试听期间适度压低原片伴奏音量以保留足够动态余量
+    restoreVideoVolume(true);
+    video.volume = AUDITION_VIDEO_VOLUME;
+    getMetronome().unlock();
     const preRoll = Math.max(0, anchorTime - 0.6);
+    auditionPendingRef.current = {
+      armed: true,
+      anchor: anchorTime,
+      observedPreAnchor: preRoll >= anchorTime - 0.02,
+    };
+
     video.currentTime = preRoll;
     setCurrentTime(preRoll);
     video.preservesPitch = true;
     video.playbackRate = 1.0;
-    video.play().catch(() => {});
+    video.play().catch(() => {
+      clearAuditionArm();
+    });
     setIsPlaying(true);
-
-    if (auditionTimerRef.current) {
-      window.clearTimeout(auditionTimerRef.current);
-    }
-
-    const delayMs = Math.max(0, (anchorTime - preRoll) * 1000);
-    auditionTimerRef.current = window.setTimeout(() => {
-      try {
-        const activeCtx = auditionAudioCtxRef.current;
-        if (!activeCtx || activeCtx.state === 'closed') return;
-        const osc = activeCtx.createOscillator();
-        const gain = activeCtx.createGain();
-        osc.frequency.setValueAtTime(1200, activeCtx.currentTime);
-        gain.gain.setValueAtTime(0.8, activeCtx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, activeCtx.currentTime + 0.04);
-        osc.connect(gain);
-        gain.connect(activeCtx.destination);
-        osc.start();
-        osc.stop(activeCtx.currentTime + 0.04);
-      } catch {
-        // 音频上下文受限时忽略
-      }
-    }, delayMs);
   };
 
   const handleTap = () => {
@@ -642,6 +714,7 @@ export const CalibrationStep: React.FC<CalibrationStepProps> = ({
   const handleTrimPointerDown = (handle: 'start' | 'end', e: React.PointerEvent) => {
     e.stopPropagation();
     e.preventDefault();
+    clearAuditionArm();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     userEditedRef.current.trim = true;
     userSeekedRef.current = true;
@@ -1125,18 +1198,14 @@ export const CalibrationStep: React.FC<CalibrationStepProps> = ({
                     const parsed = parseFloat(e.target.value);
                     if (!isNaN(parsed) && parsed >= trimStart && parsed <= trimEnd) {
                       userEditedRef.current.anchor = true;
-                      commitAudioState(bpm, parsed);
+                      commitAudioState(bpm, parsed, undefined, false);
                     }
                   }}
-                  onBlur={() => {
-                    const parsed = parseFloat(anchorInputText);
-                    if (!isNaN(parsed)) {
-                      const clamped = Math.max(trimStart, Math.min(trimEnd, parsed));
-                      setAnchorInputText(clamped.toFixed(3));
-                      userEditedRef.current.anchor = true;
-                      commitAudioState(bpm, clamped);
-                    } else {
-                      setAnchorInputText(anchorTime.toFixed(3));
+                  onBlur={commitAnchorInput}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      commitAnchorInput();
+                      e.currentTarget.blur();
                     }
                   }}
                   style={{ width: '64px', height: '24px', fontSize: '11.5px', textAlign: 'center' }}

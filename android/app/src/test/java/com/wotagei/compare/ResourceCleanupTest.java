@@ -60,4 +60,32 @@ public class ResourceCleanupTest {
             server.shutdown();
         }
     }
+
+    @Test
+    public void cleanupStaleUpdateApkFiles_deletesOnlyMatchingApkFiles() throws Exception {
+        File dir = Files.createTempDirectory("wotagei_apk_cleanup_test").toFile();
+        File staleApk1 = new File(dir, "wotagei_update_1.0.1.apk");
+        File staleApk2 = new File(dir, "wotagei_update_1.2.0.apk");
+        File exportFile = new File(dir, "wotagei_export_1700000000000.mp4");
+        File otherApk = new File(dir, "third_party.apk");
+        assertTrue(staleApk1.createNewFile());
+        assertTrue(staleApk2.createNewFile());
+        assertTrue(exportFile.createNewFile());
+        assertTrue(otherApk.createNewFile());
+
+        try {
+            NativeMediaPlugin.cleanupStaleUpdateApkFiles(dir);
+            assertFalse(staleApk1.exists());
+            assertFalse(staleApk2.exists());
+            assertTrue(exportFile.exists());
+            assertTrue(otherApk.exists());
+        } finally {
+            //noinspection ResultOfMethodCallIgnored
+            exportFile.delete();
+            //noinspection ResultOfMethodCallIgnored
+            otherApk.delete();
+            //noinspection ResultOfMethodCallIgnored
+            dir.delete();
+        }
+    }
 }
