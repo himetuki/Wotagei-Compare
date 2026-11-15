@@ -154,7 +154,7 @@ Bug reports, device compatibility feedback, and pull requests are welcome. Pleas
 
 ## Acknowledgements
 
-- Thanks to **夜瞑 (Yeming)** for authorizing the demonstration footage used in the screenshots.
+- Thanks to **夜瞑 (Yeming)** for authorizing the demonstration footage used in the screenshots, as well as pointing out the project's shortcomings and providing detailed suggestions that helped drive its further improvement.
 - Thanks to members of **ShanghaiTech Prism Anime Club · Lucifer Wotagei Team** for device testing and feedback.
 
 ## License
