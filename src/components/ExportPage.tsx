@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { ArrowLeft, Download, X, Check, Play, Pause } from 'lucide-react';
 import type { ComparisonMode, ViewportTransform } from '../types/geometry.ts';
-import type { SlowMotionRate, SoundSource } from '../types/timeline.ts';
+import type { SlowMotionRate, SoundSource, TimeInterval } from '../types/timeline.ts';
 import type { AlignmentTransform } from '../core/geometry.ts';
 import type { UnifiedTimelineResult } from '../core/timeline.ts';
 import { isTauInVideoRange } from '../core/timeline.ts';
@@ -27,6 +27,7 @@ interface ExportPageProps {
   initialRate: SlowMotionRate;
   initialSoundSource: SoundSource;
   currentPlayTau: number;
+  initialLoopRange?: TimeInterval | null;
   onBack: () => void;
 }
 
@@ -48,15 +49,23 @@ export const ExportPage: React.FC<ExportPageProps> = ({
   initialRate,
   initialSoundSource,
   currentPlayTau,
+  initialLoopRange,
   onBack,
 }) => {
   const intersectStart = timeline.intersectInterval.start;
   const intersectEnd = timeline.intersectInterval.end;
 
-  const [clipStart, setClipStart] = useState<number>(intersectStart);
-  const [clipEnd, setClipEnd] = useState<number>(intersectEnd);
+  const initialClipStart = initialLoopRange
+    ? Math.max(intersectStart, Math.min(intersectEnd - 0.1, initialLoopRange.start))
+    : intersectStart;
+  const initialClipEnd = initialLoopRange
+    ? Math.max(initialClipStart + 0.1, Math.min(intersectEnd, initialLoopRange.end))
+    : intersectEnd;
+
+  const [clipStart, setClipStart] = useState<number>(initialClipStart);
+  const [clipEnd, setClipEnd] = useState<number>(initialClipEnd);
   const [previewTau, setPreviewTau] = useState<number>(
-    Math.max(intersectStart, Math.min(intersectEnd, currentPlayTau))
+    Math.max(initialClipStart, Math.min(initialClipEnd, currentPlayTau))
   );
   const [isPreviewPlaying, setIsPreviewPlaying] = useState<boolean>(false);
   const [draggingHandle, setDraggingHandle] = useState<'A' | 'B' | null>(null);
@@ -502,9 +511,9 @@ export const ExportPage: React.FC<ExportPageProps> = ({
     initialSoundSource === 'metronome'
       ? '节拍器'
       : initialSoundSource === 'video1'
-      ? 'CH1 原声'
+      ? '视频1 原声'
       : initialSoundSource === 'video2'
-      ? 'CH2 原声'
+      ? '视频2 原声'
       : '静音';
 
   return (
@@ -626,12 +635,12 @@ export const ExportPage: React.FC<ExportPageProps> = ({
               {/* 快捷标记与数值反馈 */}
               <div className="fx-row-8" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div className="fx-row-4" style={{ display: 'flex', alignItems: 'center' }}>
-                  <span className="mono-num" style={{ color: 'var(--accent)', fontSize: '11px', fontWeight: 600 }}>
+                  <span className="mono-num" style={{ color: 'var(--ch1)', fontSize: '11px', fontWeight: 600 }}>
                     IN (A): {clipStart >= 0 ? `+${clipStart.toFixed(2)}s` : `${clipStart.toFixed(2)}s`}
                   </span>
                   <button
                     type="button"
-                    className="btn"
+                    className="btn btn-loop-a"
                     style={{ height: '20px', padding: '0 6px', fontSize: '10.5px' }}
                     onClick={() => {
                       ensureStopped();
@@ -647,7 +656,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
                 <div className="fx-row-4" style={{ display: 'flex', alignItems: 'center' }}>
                   <button
                     type="button"
-                    className="btn"
+                    className="btn btn-loop-b"
                     style={{ height: '20px', padding: '0 6px', fontSize: '10.5px' }}
                     onClick={() => {
                       ensureStopped();
@@ -707,8 +716,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
                       left: `${leftPct}%`,
                       width: `${Math.max(0, rightPct - leftPct)}%`,
                       height: '6px',
-                      backgroundColor: 'var(--accent)',
-                      opacity: 0.75,
+                      background: 'linear-gradient(90deg, rgba(56, 189, 248, 0.75), rgba(16, 185, 129, 0.75))',
                       borderRadius: '2px',
                     }}
                   />
@@ -723,7 +731,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
                       width: '24px',
                       height: '24px',
                       backgroundColor: 'var(--bg-surface)',
-                      border: '2px solid var(--accent)',
+                      border: '2px solid var(--ch1)',
                       borderRadius: '4px',
                       display: 'flex',
                       flexDirection: 'column',
@@ -735,7 +743,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
                     }}
                     title="拖拽移动起点 A"
                   >
-                    <span style={{ fontSize: '10px', fontWeight: 800, color: 'var(--accent)', lineHeight: 1 }}>
+                    <span style={{ fontSize: '10px', fontWeight: 800, color: 'var(--ch1)', lineHeight: 1 }}>
                       A
                     </span>
                   </div>
@@ -803,7 +811,7 @@ export const ExportPage: React.FC<ExportPageProps> = ({
               <div>
                 <div className="mono-muted" style={{ fontSize: '10px' }}>镜像状态</div>
                 <div className="mono-num" style={{ fontSize: '11px', fontWeight: 600 }}>
-                  CH1:{initialMirror1 ? 'ON' : 'OFF'} / CH2:{initialMirror2 ? 'ON' : 'OFF'}
+                  视频1:{initialMirror1 ? 'ON' : 'OFF'} / 视频2:{initialMirror2 ? 'ON' : 'OFF'}
                 </div>
               </div>
             </div>

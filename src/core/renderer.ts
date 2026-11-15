@@ -340,7 +340,7 @@ export function computeNativeExportLayout(input: NativeExportLayoutInput): {
   if (input.mode === 'split-screen') {
     const halfW = W / 2;
 
-    // 左半屏 CH1
+    // 左半屏 视频1
     const calib1 = input.triLine1 || defaultTriLine;
     const fit1 = calculateTriLineSplitScreenPlacement(
       calib1,
@@ -366,7 +366,7 @@ export function computeNativeExportLayout(input: NativeExportLayoutInput): {
       bgRect1 = { x: bgX / W, y: bgY / H, w: bgW / W, h: bgH / H };
     }
 
-    // 右半屏 CH2
+    // 右半屏 视频2
     const calib2 = input.triLine2 || defaultTriLine;
     const fit2 = calculateTriLineSplitScreenPlacement(
       calib2,

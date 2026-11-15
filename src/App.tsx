@@ -1,20 +1,18 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { ScreenOrientation } from '@capacitor/screen-orientation';
+import { ArrowRight } from 'lucide-react';
 import type { ComparisonMode, VideoGeometryConfig, TriLineModelType } from './types/geometry.ts';
-import type { BpmAlignStrategy, VideoAudioInfo } from './types/timeline.ts';
+import type { BpmAlignStrategy, TimeInterval, VideoAudioInfo } from './types/timeline.ts';
 import type { WizardStep } from './types/wizard.ts';
 import { ImportStep, LoadedVideoItem } from './components/ImportStep.tsx';
-import { GeometryStep } from './components/GeometryStep.tsx';
-import { AudioStep } from './components/AudioStep.tsx';
+import { CalibrationStep } from './components/CalibrationStep.tsx';
 import { Workbench, HorizontalFlipIcon } from './components/Workbench.tsx';
 
 /** 全局顶部步骤分段导航配置 */
 const WIZARD_STEPS: { id: WizardStep; label: string }[] = [
   { id: 'import', label: '导入' },
-  { id: 'geometry-video1', label: 'CH1空间' },
-  { id: 'geometry-video2', label: 'CH2空间' },
-  { id: 'audio-video1', label: 'CH1时间' },
-  { id: 'audio-video2', label: 'CH2时间' },
+  { id: 'calibrate-video1', label: '视频1' },
+  { id: 'calibrate-video2', label: '视频2' },
   { id: 'workbench', label: '对比台' },
   { id: 'export', label: '导出片段' },
 ];
@@ -47,7 +45,7 @@ const BpmBadge: React.FC<BpmBadgeProps> = ({ channel, bpm, onChange }) => {
   if (editing) {
     return (
       <div className={`tag-badge ch${channel}`} style={{ padding: '0 4px', display: 'flex', alignItems: 'center' }}>
-        <span style={{ fontSize: '11px' }}>CH{channel}</span>
+        <span style={{ fontSize: '11px' }}>视频{channel}</span>
         <input
           type="number"
           value={val}
@@ -82,7 +80,7 @@ const BpmBadge: React.FC<BpmBadgeProps> = ({ channel, bpm, onChange }) => {
       title="点击直接修改 BPM"
       onClick={() => setEditing(true)}
     >
-      CH{channel} {bpm} BPM
+      视频{channel} {bpm} BPM
     </span>
   );
 };
@@ -103,6 +101,7 @@ export default function App(): React.ReactNode {
   const [step, setStep] = useState<WizardStep>('import');
   const [mode, setMode] = useState<ComparisonMode>('split-screen');
   const [isWorkbenchToolbarExpanded, setIsWorkbenchToolbarExpanded] = useState<boolean>(false);
+  const [workbenchLoopRange, setWorkbenchLoopRange] = useState<TimeInterval | null>(null);
 
   // 持久保存双通道视频数据与标定状态
   const [video1, setVideo1] = useState<LoadedVideoItem | null>(null);
@@ -112,8 +111,12 @@ export default function App(): React.ReactNode {
   const [bpmStrategy, setBpmStrategy] = useState<BpmAlignStrategy>('left');
   const [customBpm, setCustomBpm] = useState<number>(160);
 
-  // 全局共享的三线正交标定模型（CH1 与 CH2 保持严格同步）
+  // 全局共享的三线正交标定模型（视频1 与 视频2 保持严格同步）
   const [triLineModel, setTriLineModel] = useState<TriLineModelType>('two-horizontal-one-vertical');
+
+  const navigateToStep = (nextStep: WizardStep) => {
+    setStep(nextStep);
+  };
 
   const isBothLoaded = Boolean(video1 && video2);
 
@@ -180,6 +183,20 @@ export default function App(): React.ReactNode {
     if (typeof targetCustomBpm === 'number') setCustomBpm(targetCustomBpm);
   };
 
+  /**
+   * 接收导入步骤在卸载后仍可能完成的异步元信息/音轨解码结果，按 url 安全合并字段
+   */
+  const handlePatchVideo = useCallback(
+    (index: 1 | 2, url: string, patch: Partial<LoadedVideoItem>) => {
+      const setter = index === 1 ? setVideo1 : setVideo2;
+      setter((prev) => {
+        if (!prev || prev.url !== url) return prev;
+        return { ...prev, ...patch };
+      });
+    },
+    []
+  );
+
 
 
   return (
@@ -200,7 +217,7 @@ export default function App(): React.ReactNode {
                     if (item.id === 'workbench' && step === 'workbench') {
                       setIsWorkbenchToolbarExpanded((prev) => !prev);
                     } else {
-                      setStep(item.id);
+                      navigateToStep(item.id);
                     }
                   }}
                   className={`step-tab ${active ? 'active' : ''}`}
@@ -252,51 +269,86 @@ export default function App(): React.ReactNode {
             </>
           )}
 
-          {(step === 'geometry-video1' || step === 'geometry-video2') && (video1 || video2) && (
-            <div className="control-group">
-              <select
-                value={triLineModel}
-                onChange={(e) => handleTriLineModelChange(e.target.value as TriLineModelType)}
-                className="select-input"
-                style={{
-                  height: '26px',
-                  backgroundColor: 'var(--bg-surface)',
-                  color: 'var(--text-primary)',
-                  border: '1px solid var(--border)',
-                  borderRadius: '4px',
-                  fontSize: '11.5px',
-                  padding: '0 6px',
-                  cursor: 'pointer',
-                }}
-              >
-                <option value="two-horizontal-one-vertical">两横一竖</option>
-                <option value="two-vertical-one-horizontal">两竖一横</option>
-              </select>
+          {(step === 'calibrate-video1' || step === 'calibrate-video2') && (video1 || video2) && (() => {
+            const isCalib1 = step === 'calibrate-video1';
+            const activeItem = isCalib1 ? video1 : video2;
+            const isMirrorOn = Boolean(activeItem?.geometry.mirror);
+            const isSpatialTouched = Boolean(activeItem?.spatialTouched);
+            const isAudioTouched = Boolean(activeItem?.audioAnchorTouched);
+            return (
+              <div className="control-group fx-row-4">
+                <div
+                  className="calib-status-group"
+                  role="status"
+                  aria-label="当前视频标定完成状态"
+                  title="标定状态指示（拖动三线后点亮空间，点击设为锚点后点亮时间）"
+                >
+                  <span className="calib-status-item">
+                    <span>空间</span>
+                    <span className={`calib-dot ${isSpatialTouched ? 'lit' : ''}`} aria-hidden="true" />
+                  </span>
+                  <span className="calib-status-divider" aria-hidden="true" />
+                  <span className="calib-status-item">
+                    <span>时间</span>
+                    <span className={`calib-dot ${isAudioTouched ? 'lit' : ''}`} aria-hidden="true" />
+                  </span>
+                </div>
 
-              <button
-                type="button"
-                onClick={() => {
-                  if (step === 'geometry-video1' && video1) {
-                    handleGeometry1Change({
-                      ...video1.geometry,
-                      mirror: !video1.geometry.mirror,
-                    });
-                  } else if (step === 'geometry-video2' && video2) {
-                    handleGeometry2Change({
-                      ...video2.geometry,
-                      mirror: !video2.geometry.mirror,
-                    });
-                  }
-                }}
-                className={`btn ${(step === 'geometry-video1' ? video1?.geometry.mirror : video2?.geometry.mirror) ? 'btn-active' : ''}`}
-                style={{ height: '26px', padding: '0 8px', fontSize: '11.5px' }}
-                title={`${step === 'geometry-video1' ? 'CH1' : 'CH2'} 镜像切换`}
-              >
-                <HorizontalFlipIcon size={12} />
-                <span>镜像 {(step === 'geometry-video1' ? video1?.geometry.mirror : video2?.geometry.mirror) ? 'ON' : 'OFF'}</span>
-              </button>
-            </div>
-          )}
+                <select
+                  value={triLineModel}
+                  onChange={(e) => handleTriLineModelChange(e.target.value as TriLineModelType)}
+                  className="select-input"
+                  style={{
+                    height: '26px',
+                    backgroundColor: 'var(--bg-surface)',
+                    color: 'var(--text-primary)',
+                    border: '1px solid var(--border)',
+                    borderRadius: '4px',
+                    fontSize: '11.5px',
+                    padding: '0 6px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <option value="two-horizontal-one-vertical">两横一竖</option>
+                  <option value="two-vertical-one-horizontal">两竖一横</option>
+                </select>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isCalib1 && video1) {
+                      handleGeometry1Change({
+                        ...video1.geometry,
+                        mirror: !video1.geometry.mirror,
+                      });
+                    } else if (!isCalib1 && video2) {
+                      handleGeometry2Change({
+                        ...video2.geometry,
+                        mirror: !video2.geometry.mirror,
+                      });
+                    }
+                  }}
+                  aria-pressed={isMirrorOn}
+                  className={`btn ${isMirrorOn ? 'btn-active' : ''}`}
+                  style={{ height: '26px', padding: '0 7px', fontSize: '11.5px' }}
+                  title={`${isCalib1 ? '视频1' : '视频2'} 镜像切换`}
+                >
+                  <HorizontalFlipIcon size={12} />
+                  <span>镜像</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => navigateToStep(isCalib1 ? 'calibrate-video2' : 'workbench')}
+                  className="btn btn-accent"
+                  style={{ height: '26px', padding: '0 8px', fontSize: '11.5px' }}
+                >
+                  <span>下一步</span>
+                  <ArrowRight size={12} />
+                </button>
+              </div>
+            );
+          })()}
         </div>
       </header>
 
@@ -306,101 +358,84 @@ export default function App(): React.ReactNode {
           <ImportStep
             initialVideo1={video1}
             initialVideo2={video2}
-            onUpdateVideo1={(item) =>
+            onUpdateVideo1={(item) => {
+              setWorkbenchLoopRange(null);
               setVideo1({
                 ...item,
                 geometry: {
                   ...item.geometry,
                   triLine: { ...item.geometry.triLine, model: triLineModel },
                 },
-              })
-            }
-            onUpdateVideo2={(item) =>
+              });
+            }}
+            onUpdateVideo2={(item) => {
+              setWorkbenchLoopRange(null);
               setVideo2({
                 ...item,
                 geometry: {
                   ...item.geometry,
                   triLine: { ...item.geometry.triLine, model: triLineModel },
                 },
-              })
-            }
+              });
+            }}
+            onPatchVideo={handlePatchVideo}
             onComplete={(data) => {
-              const v1 = {
-                ...data.video1,
+              const mergeIntoPrev = (
+                prev: LoadedVideoItem | null,
+                incoming: LoadedVideoItem
+              ): LoadedVideoItem => ({
+                ...(prev && prev.url === incoming.url ? prev : incoming),
+                ...incoming,
+                duration:
+                  prev && prev.url === incoming.url && prev.duration !== 10
+                    ? prev.duration
+                    : incoming.duration,
+                audioInfo:
+                  incoming.audioInfo ??
+                  (prev && prev.url === incoming.url ? prev.audioInfo : undefined),
                 geometry: {
-                  ...data.video1.geometry,
-                  triLine: { ...data.video1.geometry.triLine, model: triLineModel },
+                  ...incoming.geometry,
+                  triLine: { ...incoming.geometry.triLine, model: triLineModel },
                 },
-              };
-              const v2 = {
-                ...data.video2,
-                geometry: {
-                  ...data.video2.geometry,
-                  triLine: { ...data.video2.geometry.triLine, model: triLineModel },
-                },
-              };
-              setVideo1(v1);
-              setVideo2(v2);
-              setStep('geometry-video1');
+              });
+              setVideo1((prev) => mergeIntoPrev(prev, data.video1));
+              setVideo2((prev) => mergeIntoPrev(prev, data.video2));
+              navigateToStep('calibrate-video1');
             }}
           />
         )}
 
-        {step === 'geometry-video1' && video1 && (
-          <GeometryStep
-            key="geo-1"
+        {step === 'calibrate-video1' && video1 && (
+          <CalibrationStep
+            key="calib-1"
             videoItem={video1}
             videoIndex={1}
             model={triLineModel}
-            mode={mode}
-            onBack={() => setStep('import')}
-            onChange={handleGeometry1Change}
-            onSave={(geo) => {
-              handleGeometry1Change(geo);
-              setStep('geometry-video2');
-            }}
+            onSpatialChange={handleGeometry1Change}
+            onSpatialTouched={() =>
+              setVideo1((prev) => (prev && !prev.spatialTouched ? { ...prev, spatialTouched: true } : prev))
+            }
+            onAudioChange={handleAudio1Change}
+            onAudioAnchorTouched={() =>
+              setVideo1((prev) => (prev && !prev.audioAnchorTouched ? { ...prev, audioAnchorTouched: true } : prev))
+            }
           />
         )}
 
-        {step === 'geometry-video2' && video2 && (
-          <GeometryStep
-            key="geo-2"
+        {step === 'calibrate-video2' && video2 && (
+          <CalibrationStep
+            key="calib-2"
             videoItem={video2}
             videoIndex={2}
             model={triLineModel}
-            mode={mode}
-            onBack={() => setStep('geometry-video1')}
-            onChange={handleGeometry2Change}
-            onSave={(geo) => {
-              handleGeometry2Change(geo);
-              setStep('audio-video1');
-            }}
-          />
-        )}
-
-        {step === 'audio-video1' && video1 && (
-          <AudioStep
-            videoItem={video1}
-            videoIndex={1}
-            onBack={() => setStep('geometry-video2')}
-            onChange={handleAudio1Change}
-            onSave={(audio) => {
-              handleAudio1Change(audio);
-              setStep('audio-video2');
-            }}
-          />
-        )}
-
-        {step === 'audio-video2' && video2 && (
-          <AudioStep
-            videoItem={video2}
-            videoIndex={2}
-            onBack={() => setStep('audio-video1')}
-            onChange={handleAudio2Change}
-            onSave={(audio) => {
-              handleAudio2Change(audio);
-              setStep('workbench');
-            }}
+            onSpatialChange={handleGeometry2Change}
+            onSpatialTouched={() =>
+              setVideo2((prev) => (prev && !prev.spatialTouched ? { ...prev, spatialTouched: true } : prev))
+            }
+            onAudioChange={handleAudio2Change}
+            onAudioAnchorTouched={() =>
+              setVideo2((prev) => (prev && !prev.audioAnchorTouched ? { ...prev, audioAnchorTouched: true } : prev))
+            }
           />
         )}
 
@@ -413,8 +448,10 @@ export default function App(): React.ReactNode {
             customBpm={customBpm}
             isExport={step === 'export'}
             isToolbarExpanded={isWorkbenchToolbarExpanded}
+            loopRange={workbenchLoopRange}
+            onLoopRangeChange={setWorkbenchLoopRange}
             onToggleToolbar={() => setIsWorkbenchToolbarExpanded((prev) => !prev)}
-            onNavigate={(nextStep) => setStep(nextStep)}
+            onNavigate={(nextStep) => navigateToStep(nextStep)}
             onBpmStrategyChange={(strat, custom) => {
               setBpmStrategy(strat);
               if (typeof custom === 'number') setCustomBpm(custom);

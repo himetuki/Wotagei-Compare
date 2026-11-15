@@ -119,7 +119,8 @@ export class SafeVideoController {
     const duration = isFinite(video.duration) && video.duration > 0 ? video.duration : targetTime;
     const clamped = Math.max(0, Math.min(duration, targetTime));
 
-    if (Math.abs(video.currentTime - clamped) < 0.005) {
+    const hasFrameReady = typeof video.readyState !== 'number' || video.readyState >= 2;
+    if (hasFrameReady && !this.isSeeking && !video.seeking && Math.abs(video.currentTime - clamped) < 0.005) {
       onDone?.();
       return;
     }

@@ -49,15 +49,15 @@ export function calculateTempoPriorWeight(bpm: number): number {
 }
 
 /**
- * 按音频采样率自适应计算约 11.6ms 的能量包络 Hop 步长（44100Hz 时恒为 512）
+ * 按音频采样率自适应计算约 4ms (~250Hz) 的精细能量包络 Hop 步长
  */
 export function getAudioHopSize(sampleRate: number): number {
-  if (!sampleRate || sampleRate <= 0) return 512;
-  return Math.max(128, Math.round((512 * sampleRate) / 44100));
+  if (!sampleRate || sampleRate <= 0) return 176;
+  return Math.max(32, Math.round(sampleRate / 250));
 }
 
 /**
- * 基于能量包络、先验衰减加权与谐波共振校验自动测算音轨 BPM
+ * 基于高分辨率能量起音包络、WOTA 速度先验与多拍谐波梳状自相关自动测算音轨 BPM
  * 适用于流行乐、电子乐与动漫歌曲 (WOTA 艺常用 120 ~ 220 BPM)
  * @param channelData 单声道 Float32 PCM 数据
  * @param sampleRate 采样率 (如 44100、48000 或原生流式降采样 16000)
@@ -69,121 +69,162 @@ export function detectBpmFromPcm(
   sampleRate: number,
   maxScanSeconds?: number
 ): number {
-  if (channelData.length < sampleRate) {
+  const scanSamples =
+    typeof maxScanSeconds === 'number' && maxScanSeconds > 0
+      ? Math.min(channelData.length, Math.floor(maxScanSeconds * sampleRate))
+      : channelData.length;
+
+  const hopSize = getAudioHopSize(sampleRate);
+  const winSize = Math.max(hopSize, Math.round(sampleRate / 100)); // ~10ms 重叠 RMS 窗
+
+  if (!channelData || scanSamples < sampleRate || scanSamples < winSize + hopSize * 10) {
     // 音频过短不足 1 秒，返回默认典型 160 BPM
     return 160;
   }
 
-  // 1. 降低时间分辨率计算局部能量包络 (每步长约 11.6ms)
-  const hopSize = getAudioHopSize(sampleRate);
-  const envelopeLength = Math.floor(channelData.length / hopSize);
+  // 1. 提取高分辨率 (~250Hz / ~4ms) 局部 RMS 能量包络，避免粗网格量化阶跃
+  const envelopeLength = Math.floor((scanSamples - winSize) / hopSize) + 1;
   const envelope = new Float32Array(envelopeLength);
 
   for (let i = 0; i < envelopeLength; i++) {
     const offset = i * hopSize;
     let sum = 0;
-    for (let j = 0; j < hopSize; j++) {
+    for (let j = 0; j < winSize; j++) {
       const val = channelData[offset + j];
       sum += val * val;
     }
-    envelope[i] = Math.sqrt(sum / hopSize);
+    envelope[i] = Math.sqrt(sum / winSize);
   }
 
-  // 2. 一阶正差分提取起音 (Onset detection)
+  // 2. 一阶正差分起音包络并去均值，抑制直流背景拖尾
   const onsets = new Float32Array(envelopeLength);
+  let onsetMean = 0;
   for (let i = 1; i < envelopeLength; i++) {
     const diff = envelope[i] - envelope[i - 1];
-    onsets[i] = diff > 0 ? diff : 0;
+    const positive = diff > 0 ? diff : 0;
+    onsets[i] = positive;
+    onsetMean += positive;
+  }
+  onsetMean /= envelopeLength;
+  for (let i = 0; i < envelopeLength; i++) {
+    onsets[i] -= onsetMean;
   }
 
-  // 3. 在 80 ~ 220 BPM 范围内进行自相关搜索与先验加权
+  // 3. 多拍周期谐波梳状自相关 (1T/2T/4T/8T/16T) + WOTA 速度先验评分
   const envelopeSampleRate = sampleRate / hopSize;
   const minBpm = 80;
   const maxBpm = 220;
+  const minOverlapHops = Math.min(
+    Math.floor(envelopeSampleRate * 1.5),
+    Math.floor(envelopeLength * 0.45)
+  );
+  const maxSafeLag = envelopeLength - minOverlapHops;
 
-  const minLag = Math.floor((60 * envelopeSampleRate) / maxBpm);
-  const maxLag = Math.ceil((60 * envelopeSampleRate) / minBpm);
-
-  // 扫描窗口：未传入 maxScanSeconds 时，严格使用切片的全部可用起音数据，消除盲区截断
-  const scanLimit =
-    typeof maxScanSeconds === 'number' && maxScanSeconds > 0
-      ? Math.floor(maxScanSeconds * envelopeSampleRate)
-      : onsets.length;
-  const maxScanLength = Math.min(onsets.length, scanLimit);
-
-  // 记录每个 lag 的原始自相关系数，便于后续谐波共振复核
-  const rawCorrelations = new Float32Array(maxLag + 1);
-  let bestLag = minLag;
-  let maxScore = -1;
-
-  for (let lag = minLag; lag <= maxLag; lag++) {
+  const acCache = new Map<number, number>();
+  const evaluateIntLag = (lag: number): number => {
+    if (lag < 1 || lag >= envelopeLength) return 0;
+    const cached = acCache.get(lag);
+    if (cached !== undefined) return cached;
+    const count = envelopeLength - lag;
+    if (count < minOverlapHops) return 0;
     let sum = 0;
-    const count = maxScanLength - lag;
-    if (count <= 0) break;
-
     for (let i = 0; i < count; i++) {
       sum += onsets[i] * onsets[i + lag];
     }
-
     const corr = sum / count;
-    rawCorrelations[lag] = corr;
+    acCache.set(lag, corr);
+    return corr;
+  };
 
-    const bpmAtLag = (60 * envelopeSampleRate) / lag;
-    const weight = calculateTempoPriorWeight(bpmAtLag);
-    const score = corr * weight;
+  const evaluateContinuousLag = (lagFloat: number): number => {
+    const l0 = Math.floor(lagFloat);
+    if (l0 < 1 || l0 + 1 >= envelopeLength) return 0;
+    const frac = lagFloat - l0;
+    return (1 - frac) * evaluateIntLag(l0) + frac * evaluateIntLag(l0 + 1);
+  };
 
-    if (score > maxScore) {
-      maxScore = score;
-      bestLag = lag;
+  const combMultipliers = [1, 2, 4, 8, 16];
+  const combWeights = [1.0, 0.9, 0.9, 0.85, 0.7];
+
+  const scoreCandidateBpm = (bpm: number): number => {
+    const beatPeriodHops = (60 * envelopeSampleRate) / bpm;
+    let combSum = 0;
+    let weightSum = 0;
+    for (let m = 0; m < combMultipliers.length; m++) {
+      const lagFloat = beatPeriodHops * combMultipliers[m];
+      if (lagFloat >= maxSafeLag) break;
+      combSum += evaluateContinuousLag(lagFloat) * combWeights[m];
+      weightSum += combWeights[m];
+    }
+    if (weightSum <= 0) return -Infinity;
+    return (combSum / weightSum) * calculateTempoPriorWeight(bpm);
+  };
+
+  // 3.1 全域粗扫描（步长 0.5 BPM）
+  let bestBpm = 160;
+  let bestScore = -Infinity;
+  for (let bpm = minBpm; bpm <= maxBpm; bpm += 0.5) {
+    const score = scoreCandidateBpm(bpm);
+    if (score > bestScore) {
+      bestScore = score;
+      bestBpm = bpm;
     }
   }
 
-  if (bestLag <= 0) return 160;
+  if (bestScore === -Infinity) return 160;
 
-  let chosenLag = bestLag;
-
-  // 4. 谐波共振校验 (Harmonic Folding & Rescoring)
-  // 4.1 若命中 95 ~ 125 BPM (常见为 110 等 1.5 拍亚谐波)，探测其 1.5 倍频 (如 165 BPM)
-  const initialBpmAtBestLag = (60 * envelopeSampleRate) / bestLag;
-  if (initialBpmAtBestLag >= 95 && initialBpmAtBestLag <= 125) {
-    const target15xLag = Math.round(bestLag / 1.5);
-    if (target15xLag >= minLag && target15xLag <= maxLag) {
-      // 在 1.5 倍频邻域找局部极大值
-      let localMaxCorr = 0;
-      let localBestLag = target15xLag;
-      for (let l = Math.max(minLag, target15xLag - 1); l <= Math.min(maxLag, target15xLag + 1); l++) {
-        if (rawCorrelations[l] > localMaxCorr) {
-          localMaxCorr = rawCorrelations[l];
-          localBestLag = l;
-        }
+  // 4. 谐波共振校验：若粗峰落入 95~125 BPM (常见 1.5 拍亚谐波)，复核其 1.5 倍频
+  if (bestBpm >= 95 && bestBpm <= 125) {
+    const target15x = bestBpm * 1.5;
+    let best15xBpm = target15x;
+    let best15xScore = -Infinity;
+    for (
+      let bpm = Math.max(minBpm, target15x - 3);
+      bpm <= Math.min(maxBpm, target15x + 3);
+      bpm += 0.5
+    ) {
+      const score = scoreCandidateBpm(bpm);
+      if (score > best15xScore) {
+        best15xScore = score;
+        best15xBpm = bpm;
       }
-      // 只要 1.5x 处的原始自相关达到慢速峰的 30% 以上，认定真实节拍为 1.5x 高速拍
-      if (localMaxCorr > 0 && localMaxCorr >= rawCorrelations[bestLag] * 0.3) {
-        chosenLag = localBestLag;
-      }
+    }
+    if (best15xScore >= bestScore * 0.45) {
+      bestBpm = best15xBpm;
+      bestScore = best15xScore;
     }
   }
 
-  // 5. 局部未加权物理自相关峰值的二次抛物线插值 (Sub-sample Parabolic Peak Interpolation)
-  // 利用最佳整数点与其前后两邻居相关系数，拟合光滑连续曲线极值，将时间分辨率提升至连续亚采样级
-  // 消除 6~7 BPM 的离散量化粗糙阶跃，且在原始物理系数上拟合可规避先验单调递减坡度对极值的负向偏置拉偏
-  let refinedLag = chosenLag;
-  if (chosenLag > minLag && chosenLag < maxLag) {
-    const y0 = rawCorrelations[chosenLag - 1];
-    const y1 = rawCorrelations[chosenLag];
-    const y2 = rawCorrelations[chosenLag + 1];
-    const denom = 2 * (2 * y1 - y0 - y2);
-    if (Math.abs(denom) > 1e-9) {
-      const delta = (y2 - y0) / denom;
-      if (Math.abs(delta) <= 1.0) {
-        refinedLag = chosenLag + delta;
-      }
+  // 5. 二级与三级亚网格精密搜索（0.25 BPM -> 0.05 BPM）锁定真实整数速度
+  let midBpm = bestBpm;
+  let midScore = bestScore;
+  for (
+    let bpm = Math.max(minBpm, bestBpm - 1.5);
+    bpm <= Math.min(maxBpm, bestBpm + 1.5);
+    bpm += 0.25
+  ) {
+    const score = scoreCandidateBpm(bpm);
+    if (score > midScore) {
+      midScore = score;
+      midBpm = bpm;
     }
   }
 
-  let calculatedBpm = (60 * envelopeSampleRate) / refinedLag;
+  let calculatedBpm = midBpm;
+  let fineScore = midScore;
+  for (
+    let bpm = Math.max(minBpm, midBpm - 0.5);
+    bpm <= Math.min(maxBpm, midBpm + 0.5);
+    bpm += 0.05
+  ) {
+    const score = scoreCandidateBpm(bpm);
+    if (score > fineScore) {
+      fineScore = score;
+      calculatedBpm = bpm;
+    }
+  }
 
-  // 6. 若估算落入 < 100 偏慢区间，检查是否存在强双倍频
+  // 6. 倍频折叠兜底
   if (calculatedBpm < 100) {
     calculatedBpm *= 2;
   } else if (calculatedBpm > 220) {
@@ -294,8 +335,12 @@ export async function decodeAudioFromFile(file: File): Promise<{
   waveform: Float32Array;
   rawChannelData: Float32Array;
 }> {
-  // 防 OOM 熔断保护：若文件体积超过 80MB，跳过全量二进制读取与解压，杜绝老旧 Android 沙箱内存溢出闪退
-  if (file.size > 80 * 1024 * 1024) {
+  // 防 OOM 熔断保护：移动端 WebView 限制 80MB 防止沙箱内存溢出；桌面端浏览器放宽至 512MB
+  const isMobileUa =
+    typeof navigator !== 'undefined' &&
+    /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+  const maxAudioDecodeBytes = (isMobileUa ? 80 : 512) * 1024 * 1024;
+  if (file.size > maxAudioDecodeBytes) {
     const fallbackDuration = 60;
     const sampleRate = 44100;
     return {

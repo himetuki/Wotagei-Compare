@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import { Film, Upload, ArrowRight, CheckCircle2, Loader2 } from 'lucide-react';
 import type { VideoGeometryConfig } from '../types/geometry.ts';
 import type { VideoAudioInfo } from '../types/timeline.ts';
@@ -16,6 +16,8 @@ export interface LoadedVideoItem {
   height: number;
   geometry: VideoGeometryConfig;
   audioInfo?: VideoAudioInfo;
+  spatialTouched?: boolean;
+  audioAnchorTouched?: boolean;
 }
 
 interface ImportStepProps {
@@ -23,6 +25,7 @@ interface ImportStepProps {
   initialVideo2?: LoadedVideoItem | null;
   onUpdateVideo1?: (item: LoadedVideoItem) => void;
   onUpdateVideo2?: (item: LoadedVideoItem) => void;
+  onPatchVideo?: (index: 1 | 2, url: string, patch: Partial<LoadedVideoItem>) => void;
   onComplete: (data: {
     video1: LoadedVideoItem;
     video2: LoadedVideoItem;
@@ -105,6 +108,7 @@ export const ImportStep: React.FC<ImportStepProps> = ({
   initialVideo2 = null,
   onUpdateVideo1,
   onUpdateVideo2,
+  onPatchVideo,
   onComplete,
 }) => {
   const [video1, setVideo1] = useState<LoadedVideoItem | null>(initialVideo1);
@@ -118,10 +122,47 @@ export const ImportStep: React.FC<ImportStepProps> = ({
   const fileInputRef2 = useRef<HTMLInputElement>(null);
   const probeHostRef = useRef<HTMLDivElement>(null);
   const pickingRef = useRef<boolean>(false);
+  const isMountedRef = useRef<boolean>(true);
   const activeBlobUrlsRef = useRef<{ 1?: string; 2?: string }>({
     1: initialVideo1?.url,
     2: initialVideo2?.url,
   });
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  /**
+   * 安全合并通道异步字段：即使组件已卸载推进至下一步，仍通过 onPatchVideo 将元信息与音轨注入 App 状态
+   */
+  const applyChannelPatch = (
+    index: 1 | 2,
+    url: string,
+    patch: Partial<LoadedVideoItem>
+  ) => {
+    onPatchVideo?.(index, url, patch);
+    if (!isMountedRef.current) return;
+    const setLocal = index === 1 ? setVideo1 : setVideo2;
+    setLocal((prev) => (prev && prev.url === url ? { ...prev, ...patch } : prev));
+  };
+
+  const setChannelLoading = (
+    index: 1 | 2,
+    kind: 'meta' | 'audio',
+    loading: boolean
+  ) => {
+    if (!isMountedRef.current) return;
+    if (kind === 'meta') {
+      if (index === 1) setLoadingMeta1(loading);
+      else setLoadingMeta2(loading);
+    } else {
+      if (index === 1) setLoadingAudio1(loading);
+      else setLoadingAudio2(loading);
+    }
+  };
 
   /**
    * 构造通道默认几何参数
@@ -152,8 +193,10 @@ export const ImportStep: React.FC<ImportStepProps> = ({
       const baseItem: LoadedVideoItem = {
         nativeUri: picked.uri,
         url,
-        name: picked.name || `CH${index}.mp4`,
+        name: picked.name || `视频${index}.mp4`,
         duration: dur,
+        spatialTouched: false,
+        audioAnchorTouched: false,
         width: picked.width && picked.width > 0 ? picked.width : 1920,
         height: picked.height && picked.height > 0 ? picked.height : 1080,
         geometry: createDefaultGeometry(),
@@ -162,14 +205,12 @@ export const ImportStep: React.FC<ImportStepProps> = ({
       if (index === 1) {
         setVideo1(baseItem);
         onUpdateVideo1?.(baseItem);
-        setLoadingMeta1(false);
-        setLoadingAudio1(true);
       } else {
         setVideo2(baseItem);
         onUpdateVideo2?.(baseItem);
-        setLoadingMeta2(false);
-        setLoadingAudio2(true);
       }
+      setChannelLoading(index, 'meta', false);
+      setChannelLoading(index, 'audio', true);
 
       try {
         const audioRes = await NativeMedia.extractAudioAnalysis({ uri: picked.uri });
@@ -205,23 +246,8 @@ export const ImportStep: React.FC<ImportStepProps> = ({
           };
         }
 
-        if (index === 1) {
-          setVideo1((prev) => {
-            if (!prev || prev.url !== url) return prev;
-            const fullItem = { ...prev, audioInfo: updatedAudio };
-            onUpdateVideo1?.(fullItem);
-            return fullItem;
-          });
-          setLoadingAudio1(false);
-        } else {
-          setVideo2((prev) => {
-            if (!prev || prev.url !== url) return prev;
-            const fullItem = { ...prev, audioInfo: updatedAudio };
-            onUpdateVideo2?.(fullItem);
-            return fullItem;
-          });
-          setLoadingAudio2(false);
-        }
+        applyChannelPatch(index, url, { audioInfo: updatedAudio });
+        setChannelLoading(index, 'audio', false);
       } catch {
         const fallbackAudio: VideoAudioInfo = {
           duration: dur,
@@ -233,23 +259,8 @@ export const ImportStep: React.FC<ImportStepProps> = ({
           trimRange: { start: 0, end: dur },
           rawChannelData: new Float32Array(0),
         };
-        if (index === 1) {
-          setVideo1((prev) => {
-            if (!prev || prev.url !== url) return prev;
-            const fullItem = { ...prev, audioInfo: fallbackAudio };
-            onUpdateVideo1?.(fullItem);
-            return fullItem;
-          });
-          setLoadingAudio1(false);
-        } else {
-          setVideo2((prev) => {
-            if (!prev || prev.url !== url) return prev;
-            const fullItem = { ...prev, audioInfo: fallbackAudio };
-            onUpdateVideo2?.(fullItem);
-            return fullItem;
-          });
-          setLoadingAudio2(false);
-        }
+        applyChannelPatch(index, url, { audioInfo: fallbackAudio });
+        setChannelLoading(index, 'audio', false);
       }
     } finally {
       pickingRef.current = false;
@@ -282,6 +293,8 @@ export const ImportStep: React.FC<ImportStepProps> = ({
       url,
       name: file.name,
       duration: 10,
+      spatialTouched: false,
+      audioAnchorTouched: false,
       width: 1920,
       height: 1080,
       geometry: createDefaultGeometry(),
@@ -290,34 +303,21 @@ export const ImportStep: React.FC<ImportStepProps> = ({
     if (index === 1) {
       setVideo1(baseItem);
       onUpdateVideo1?.(baseItem);
-      setLoadingMeta1(true);
-      setLoadingAudio1(true);
     } else {
       setVideo2(baseItem);
       onUpdateVideo2?.(baseItem);
-      setLoadingMeta2(true);
-      setLoadingAudio2(true);
     }
+    setChannelLoading(index, 'meta', true);
+    setChannelLoading(index, 'audio', true);
 
     // 2. 异步探测真实视频分辨率与时长（带超时与 DOM 挂载保底）
     const metaPromise = probeVideoMetadata(url, probeHostRef.current).then((meta) => {
-      if (index === 1) {
-        setVideo1((prev) => {
-          if (!prev || prev.url !== url) return prev;
-          const updated = { ...prev, width: meta.width, height: meta.height, duration: meta.duration };
-          onUpdateVideo1?.(updated);
-          return updated;
-        });
-        setLoadingMeta1(false);
-      } else {
-        setVideo2((prev) => {
-          if (!prev || prev.url !== url) return prev;
-          const updated = { ...prev, width: meta.width, height: meta.height, duration: meta.duration };
-          onUpdateVideo2?.(updated);
-          return updated;
-        });
-        setLoadingMeta2(false);
-      }
+      applyChannelPatch(index, url, {
+        width: meta.width,
+        height: meta.height,
+        duration: meta.duration,
+      });
+      setChannelLoading(index, 'meta', false);
       return meta;
     });
 
@@ -337,23 +337,8 @@ export const ImportStep: React.FC<ImportStepProps> = ({
           rawChannelData: audioData.rawChannelData,
         };
 
-        if (index === 1) {
-          setVideo1((prev) => {
-            if (!prev || prev.url !== url) return prev;
-            const fullItem = { ...prev, audioInfo: updatedAudio };
-            onUpdateVideo1?.(fullItem);
-            return fullItem;
-          });
-          setLoadingAudio1(false);
-        } else {
-          setVideo2((prev) => {
-            if (!prev || prev.url !== url) return prev;
-            const fullItem = { ...prev, audioInfo: updatedAudio };
-            onUpdateVideo2?.(fullItem);
-            return fullItem;
-          });
-          setLoadingAudio2(false);
-        }
+        applyChannelPatch(index, url, { audioInfo: updatedAudio });
+        setChannelLoading(index, 'audio', false);
       } catch {
         const meta = await metaPromise.catch(() => ({ duration: 10 }));
         const fallbackAudio: VideoAudioInfo = {
@@ -367,23 +352,8 @@ export const ImportStep: React.FC<ImportStepProps> = ({
           rawChannelData: new Float32Array(44100 * 2).fill(0),
         };
 
-        if (index === 1) {
-          setVideo1((prev) => {
-            if (!prev || prev.url !== url) return prev;
-            const fullItem = { ...prev, audioInfo: fallbackAudio };
-            onUpdateVideo1?.(fullItem);
-            return fullItem;
-          });
-          setLoadingAudio1(false);
-        } else {
-          setVideo2((prev) => {
-            if (!prev || prev.url !== url) return prev;
-            const fullItem = { ...prev, audioInfo: fallbackAudio };
-            onUpdateVideo2?.(fullItem);
-            return fullItem;
-          });
-          setLoadingAudio2(false);
-        }
+        applyChannelPatch(index, url, { audioInfo: fallbackAudio });
+        setChannelLoading(index, 'audio', false);
       }
     })();
 
@@ -401,7 +371,7 @@ export const ImportStep: React.FC<ImportStepProps> = ({
     isLoadingMeta: boolean,
     inputRef: React.RefObject<HTMLInputElement | null>
   ) => {
-    const chCode = `CH${index}`;
+    const chCode = `视频${index}`;
     const badgeClass = index === 1 ? 'ch1' : 'ch2';
     const loadedClass = item ? (index === 1 ? 'loaded-ch1' : 'loaded-ch2') : '';
 
@@ -597,7 +567,7 @@ export const ImportStep: React.FC<ImportStepProps> = ({
           }}
           style={{ height: '34px', padding: '0 16px', fontSize: '13px' }}
         >
-          <span>开始空间标定</span>
+          <span>开始标定</span>
           <ArrowRight size={15} />
         </button>
       </div>

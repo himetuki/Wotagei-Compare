@@ -7,7 +7,9 @@ import {
   Layers,
   Columns2,
   ChevronUp,
-  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  X,
 } from 'lucide-react';
 import type {
   ComparisonMode,
@@ -17,6 +19,7 @@ import type {
   BpmAlignStrategy,
   SlowMotionRate,
   SoundSource,
+  TimeInterval,
 } from '../types/timeline.ts';
 import { calculateTriLineAlignment, AlignmentTransform } from '../core/geometry.ts';
 import {
@@ -31,6 +34,8 @@ import type { LoadedVideoItem } from './ImportStep.tsx';
 import type { WizardStep } from '../types/wizard.ts';
 import { ExportPage } from './ExportPage.tsx';
 
+type StepPreset = 'frame' | '50ms' | '100ms' | 'beat-quarter' | 'beat-half' | 'custom';
+
 export interface WorkbenchProps {
   video1: LoadedVideoItem;
   video2: LoadedVideoItem;
@@ -39,6 +44,8 @@ export interface WorkbenchProps {
   customBpm: number;
   isExport?: boolean;
   isToolbarExpanded?: boolean;
+  loopRange?: TimeInterval | null;
+  onLoopRangeChange?: (range: TimeInterval | null) => void;
   onToggleToolbar?: () => void;
   onNavigate?: (step: WizardStep) => void;
   onBpmStrategyChange?: (strategy: BpmAlignStrategy, customBpm?: number) => void;
@@ -80,6 +87,8 @@ export const Workbench: React.FC<WorkbenchProps> = ({
   customBpm,
   isExport = false,
   isToolbarExpanded = false,
+  loopRange,
+  onLoopRangeChange,
   onToggleToolbar,
   onNavigate,
   onBpmStrategyChange,
@@ -90,13 +99,35 @@ export const Workbench: React.FC<WorkbenchProps> = ({
   const videoRef1 = useRef<HTMLVideoElement>(null);
   const videoRef2 = useRef<HTMLVideoElement>(null);
   const engineRef = useRef<DualVideoSyncEngine | null>(null);
+  const fallbackCanvasRef1 = useRef<HTMLCanvasElement | null>(null);
+  const fallbackCanvasRef2 = useRef<HTMLCanvasElement | null>(null);
+  const fallbackMetaRef = useRef<{
+    1: { url: string; time: number; has: boolean };
+    2: { url: string; time: number; has: boolean };
+  }>({
+    1: { url: '', time: -1, has: false },
+    2: { url: '', time: -1, has: false },
+  });
 
   const [mode, setMode] = useState<ComparisonMode>(initialMode);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [slowMotionRate, setSlowMotionRate] = useState<SlowMotionRate>(1.0);
   const [soundSource, setSoundSource] = useState<SoundSource>('metronome');
   const [relativeOpacity, setRelativeOpacity] = useState<number>(0);
-  const [isBpmMenuOpen, setIsBpmMenuOpen] = useState<boolean>(false);
+  const [openPopup, setOpenPopup] = useState<'step' | 'rate' | 'bpm' | null>(null);
+  const [stepPreset, setStepPreset] = useState<StepPreset>('frame');
+  const [customStepSec, setCustomStepSec] = useState<number>(0.033);
+  const [customStepInputText, setCustomStepInputText] = useState<string>('0.033');
+  const [internalLoopRange, setInternalLoopRange] = useState<TimeInterval | null>(null);
+
+  const activeLoopRange = loopRange !== undefined ? loopRange : internalLoopRange;
+  const updateLoopRange = (next: TimeInterval | null) => {
+    if (onLoopRangeChange) {
+      onLoopRangeChange(next);
+    } else {
+      setInternalLoopRange(next);
+    }
+  };
 
   const [mirror1, setMirror1] = useState<boolean>(video1.geometry.mirror);
   const [mirror2, setMirror2] = useState<boolean>(video2.geometry.mirror);
@@ -164,6 +195,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
       anchor2: a2,
       soundSource,
       slowMotionRate,
+      loopInterval: activeLoopRange ?? timeline.intersectInterval,
       onTauUpdate: (nextTau, isEnginePlaying) => {
         setTau(nextTau);
         tauRef.current = nextTau;
@@ -185,7 +217,42 @@ export const Workbench: React.FC<WorkbenchProps> = ({
     };
   }, []);
 
-  // 当时间轴参数、声音源或慢放倍率变化时更新引擎配置
+  // 点击弹出层外区域或按下 Esc 时关闭当前弹出菜单
+  useEffect(() => {
+    if (!openPopup) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (!(e.target instanceof Element && e.target.closest('[data-wb-popup]'))) {
+        setOpenPopup(null);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setOpenPopup(null);
+      }
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [openPopup]);
+
+  // 交集边界变化时对已有 A-B 循环区间进行裁剪保护（窄于 0.1s 则重置）
+  useEffect(() => {
+    if (!activeLoopRange) return;
+    const iStart = timeline.intersectInterval.start;
+    const iEnd = timeline.intersectInterval.end;
+    const clampedStart = Math.max(iStart, Math.min(iEnd, activeLoopRange.start));
+    const clampedEnd = Math.min(iEnd, Math.max(iStart, activeLoopRange.end));
+    if (clampedEnd - clampedStart < 0.1) {
+      updateLoopRange(null);
+    } else if (clampedStart !== activeLoopRange.start || clampedEnd !== activeLoopRange.end) {
+      updateLoopRange({ start: clampedStart, end: clampedEnd });
+    }
+  }, [timeline.intersectInterval.start, timeline.intersectInterval.end]);
+
+  // 当时间轴参数、声音源、慢放倍率或 A-B 循环区间变化时更新引擎配置
   useEffect(() => {
     engineRef.current?.updateConfig({
       timeline,
@@ -193,8 +260,9 @@ export const Workbench: React.FC<WorkbenchProps> = ({
       anchor2: a2,
       soundSource,
       slowMotionRate,
+      loopInterval: activeLoopRange ?? timeline.intersectInterval,
     });
-  }, [timeline, a1, a2, soundSource, slowMotionRate]);
+  }, [timeline, a1, a2, soundSource, slowMotionRate, activeLoopRange]);
 
   const isExportActive = isExportPageOpen || isExport;
 
@@ -207,12 +275,113 @@ export const Workbench: React.FC<WorkbenchProps> = ({
     }
   }, [isExportActive, timeline.effectiveBpm]);
 
+  /**
+   * 将当前已就绪的视频帧抓取至离屏备用画布，防止寻道期间画布闪烁黑屏
+   */
+  const captureVideoToFallbackCanvas = (
+    video: HTMLVideoElement,
+    canvasRef: React.MutableRefObject<HTMLCanvasElement | null>,
+    width: number,
+    height: number
+  ): boolean => {
+    if (width <= 0 || height <= 0 || video.readyState < 2 || video.videoWidth <= 0 || video.videoHeight <= 0) {
+      return false;
+    }
+    let c = canvasRef.current;
+    if (!c) {
+      c = document.createElement('canvas');
+      canvasRef.current = c;
+    }
+    if (c.width !== width) c.width = width;
+    if (c.height !== height) c.height = height;
+    const fctx = c.getContext('2d');
+    if (!fctx) return false;
+    try {
+      fctx.drawImage(video, 0, 0, width, height);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  /**
+   * 同步更新指定通道的最近已就绪帧快照
+   */
+  const snapshotChannelFrame = (
+    key: 1 | 2,
+    video: HTMLVideoElement | null,
+    url: string,
+    width: number,
+    height: number,
+    canvasRef: React.MutableRefObject<HTMLCanvasElement | null>
+  ) => {
+    if (!video || video.seeking || video.readyState < 2 || video.videoWidth <= 0 || video.videoHeight <= 0) {
+      return;
+    }
+    const entry = fallbackMetaRef.current[key];
+    if (entry.has && entry.url === url && Math.abs(entry.time - video.currentTime) <= 0.001) {
+      return;
+    }
+    if (captureVideoToFallbackCanvas(video, canvasRef, width, height)) {
+      entry.has = true;
+      entry.url = url;
+      entry.time = video.currentTime;
+    }
+  };
+
+  /**
+   * 在发起暂停、寻道或步进前瞬间锁存当前双通道展示画面，确保寻道过程零闪黑
+   */
+  const captureReadySnapshots = useCallback(() => {
+    snapshotChannelFrame(1, videoRef1.current, video1.url, video1.width, video1.height, fallbackCanvasRef1);
+    snapshotChannelFrame(2, videoRef2.current, video2.url, video2.width, video2.height, fallbackCanvasRef2);
+  }, [video1.url, video1.width, video1.height, video2.url, video2.width, video2.height]);
+
+  /**
+   * 解析供对比画布绘制的视频帧源：全速播放态零拷贝直通，非播放态及寻道未就绪时使用缓存帧占位
+   */
+  const resolveRenderSource = (
+    key: 1 | 2,
+    video: HTMLVideoElement,
+    url: string,
+    width: number,
+    height: number,
+    active: boolean,
+    isEnginePlaying: boolean,
+    canvasRef: React.MutableRefObject<HTMLCanvasElement | null>
+  ): HTMLVideoElement | HTMLCanvasElement => {
+    const entry = fallbackMetaRef.current[key];
+    const ready =
+      !video.seeking &&
+      video.readyState >= 2 &&
+      video.videoWidth > 0 &&
+      video.videoHeight > 0;
+
+    if (active && ready && (!isEnginePlaying || !entry.has || entry.url !== url)) {
+      snapshotChannelFrame(key, video, url, width, height, canvasRef);
+    }
+
+    if (active && !ready && entry.has && entry.url === url && canvasRef.current) {
+      return canvasRef.current;
+    }
+    return video;
+  };
+
   // 当视频 ref 挂载或从导出页切回对比台时，自动重新绑定控制权、恢复倍速静音配置并定位至当前 tau
   useEffect(() => {
     const v1 = videoRef1.current;
     const v2 = videoRef2.current;
     if (!v1 || !v2 || isExportActive) return;
 
+    const meta = fallbackMetaRef.current;
+    if (meta[1].url !== video1.url) {
+      meta[1] = { url: video1.url, has: false, time: -1 };
+    }
+    if (meta[2].url !== video2.url) {
+      meta[2] = { url: video2.url, has: false, time: -1 };
+    }
+
+    captureReadySnapshots();
     engineRef.current?.attachVideos(v1, v2);
     engineRef.current?.updateConfig({
       timeline,
@@ -229,6 +398,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
    */
   const seekToTau = useCallback(
     (targetTau: number, onComplete?: () => void) => {
+      captureReadySnapshots();
       const clampedTau = Math.max(
         timeline.intersectInterval.start,
         Math.min(timeline.intersectInterval.end, targetTau)
@@ -238,13 +408,14 @@ export const Workbench: React.FC<WorkbenchProps> = ({
       metronomeRef.current.reset(clampedTau, timeline.effectiveBpm);
       engineRef.current?.seekToTau(clampedTau, onComplete);
     },
-    [timeline]
+    [timeline, captureReadySnapshots]
   );
 
   /**
    * 切换播放与暂停状态 (统一经过会合屏障联合起播)
    */
   const togglePlay = () => {
+    captureReadySnapshots();
     if (isPlaying) {
       engineRef.current?.pause();
     } else {
@@ -265,9 +436,105 @@ export const Workbench: React.FC<WorkbenchProps> = ({
    * 从锚点前 1s 快速起播 (原子会合屏障，初相位差严格为 0)
    */
   const playFromPreRoll = () => {
-    const targetTau = Math.max(timeline.intersectInterval.start, -1.0);
+    const activeBounds = activeLoopRange ?? timeline.intersectInterval;
+    const targetTau = Math.max(activeBounds.start, Math.min(activeBounds.end, -1.0));
     metronomeRef.current.reset(targetTau, timeline.effectiveBpm);
     engineRef.current?.playFrom(targetTau);
+  };
+
+  const effectiveStepSeconds = useMemo(() => {
+    const beatSec = 60 / Math.max(1, timeline.effectiveBpm);
+    switch (stepPreset) {
+      case 'frame':
+        return 1 / 30;
+      case '50ms':
+        return 0.05;
+      case '100ms':
+        return 0.1;
+      case 'beat-quarter':
+        return beatSec / 4;
+      case 'beat-half':
+        return beatSec / 2;
+      case 'custom':
+        return Math.max(0.005, customStepSec);
+    }
+  }, [stepPreset, customStepSec, timeline.effectiveBpm]);
+
+  const activeStepLabel = useMemo(() => {
+    switch (stepPreset) {
+      case 'frame':
+        return '1帧';
+      case '50ms':
+        return '0.05s';
+      case '100ms':
+        return '0.10s';
+      case 'beat-quarter':
+        return '1/4拍';
+      case 'beat-half':
+        return '1/2拍';
+      case 'custom':
+        return `${Math.max(0.005, customStepSec).toFixed(3)}s`;
+    }
+  }, [stepPreset, customStepSec]);
+
+  /**
+   * 立即暂停并沿用 tauRef 同步累加微调步进量，保障快速连点不丢帧
+   */
+  const stepTau = (direction: -1 | 1) => {
+    captureReadySnapshots();
+    const activeBounds = activeLoopRange ?? timeline.intersectInterval;
+    if (engineRef.current?.getIntendedPlaying() || isPlaying) {
+      engineRef.current?.pause();
+      setIsPlaying(false);
+    }
+    const nextTau = Math.max(
+      activeBounds.start,
+      Math.min(activeBounds.end, tauRef.current + direction * effectiveStepSeconds)
+    );
+    setTau(nextTau);
+    tauRef.current = nextTau;
+    metronomeRef.current.reset(nextTau, timeline.effectiveBpm);
+    engineRef.current?.seekToTau(nextTau, undefined, false);
+  };
+
+  /**
+   * 设当前时刻为局部循环起点 A（保障最小宽度 0.1s）
+   */
+  const handleSetLoopA = () => {
+    const iStart = timeline.intersectInterval.start;
+    const iEnd = timeline.intersectInterval.end;
+    if (iEnd - iStart < 0.1) return;
+    const cur = Math.max(iStart, Math.min(iEnd, tauRef.current));
+    const existingEnd = activeLoopRange ? activeLoopRange.end : iEnd;
+    const nextEnd = cur <= existingEnd - 0.1 ? existingEnd : iEnd;
+    const nextStart = Math.max(iStart, Math.min(nextEnd - 0.1, cur));
+    const next = { start: nextStart, end: nextEnd };
+    updateLoopRange(next);
+    if (tauRef.current < next.start || tauRef.current > next.end) {
+      seekToTau(Math.max(next.start, Math.min(next.end, tauRef.current)));
+    }
+  };
+
+  /**
+   * 设当前时刻为局部循环终点 B（保障最小宽度 0.1s）
+   */
+  const handleSetLoopB = () => {
+    const iStart = timeline.intersectInterval.start;
+    const iEnd = timeline.intersectInterval.end;
+    if (iEnd - iStart < 0.1) return;
+    const cur = Math.max(iStart, Math.min(iEnd, tauRef.current));
+    const existingStart = activeLoopRange ? activeLoopRange.start : iStart;
+    const nextStart = cur >= existingStart + 0.1 ? existingStart : iStart;
+    const nextEnd = Math.min(iEnd, Math.max(nextStart + 0.1, cur));
+    const next = { start: nextStart, end: nextEnd };
+    updateLoopRange(next);
+    if (tauRef.current < next.start || tauRef.current > next.end) {
+      seekToTau(Math.max(next.start, Math.min(next.end, tauRef.current)));
+    }
+  };
+
+  const handleClearLoop = () => {
+    updateLoopRange(null);
   };
 
   /**
@@ -310,15 +577,37 @@ export const Workbench: React.FC<WorkbenchProps> = ({
               const currentTau = tauRef.current;
               const v1Active = isTauInVideoRange(currentTau, timeline.span1);
               const v2Active = isTauInVideoRange(currentTau, timeline.span2);
+              const isEnginePlaying = engineRef.current?.getIsPlaying() ?? false;
+
+              const source1 = resolveRenderSource(
+                1,
+                v1,
+                video1.url,
+                video1.width,
+                video1.height,
+                v1Active,
+                isEnginePlaying,
+                fallbackCanvasRef1
+              );
+              const source2 = resolveRenderSource(
+                2,
+                v2,
+                video2.url,
+                video2.width,
+                video2.height,
+                v2Active,
+                isEnginePlaying,
+                fallbackCanvasRef2
+              );
 
               const renderState: ComparisonRenderState = {
                 mode,
-                video1: v1,
+                video1: source1,
                 video1Size: { width: video1.width, height: video1.height },
                 video1Active: v1Active,
                 mirror1,
                 triLine1: video1.geometry.triLine,
-                video2: v2,
+                video2: source2,
                 video2Size: { width: video2.width, height: video2.height },
                 video2Active: v2Active,
                 mirror2,
@@ -518,8 +807,8 @@ export const Workbench: React.FC<WorkbenchProps> = ({
               {(
                 [
                   { id: 'metronome', label: '节拍器' },
-                  { id: 'video1', label: 'CH1' },
-                  { id: 'video2', label: 'CH2' },
+                  { id: 'video1', label: '视频1' },
+                  { id: 'video2', label: '视频2' },
                   { id: 'mute', label: '静音' },
                 ] as { id: SoundSource; label: string }[]
               ).map((item) => (
@@ -547,20 +836,20 @@ export const Workbench: React.FC<WorkbenchProps> = ({
               onClick={() => toggleMirror(1)}
               className={`btn ${mirror1 ? 'btn-active' : ''}`}
               style={{ padding: '0 6px' }}
-              title="CH1 水平镜像"
+              title="视频1 水平镜像"
             >
               <HorizontalFlipIcon size={12} />
-              <span>CH1</span>
+              <span>视频1</span>
             </button>
             <button
               type="button"
               onClick={() => toggleMirror(2)}
               className={`btn ${mirror2 ? 'btn-active' : ''}`}
               style={{ padding: '0 6px' }}
-              title="CH2 水平镜像"
+              title="视频2 水平镜像"
             >
               <HorizontalFlipIcon size={12} />
-              <span>CH2</span>
+              <span>视频2</span>
             </button>
           </div>
         </div>
@@ -581,27 +870,30 @@ export const Workbench: React.FC<WorkbenchProps> = ({
           type="button"
           onClick={onToggleToolbar}
           title={isToolbarExpanded ? '收起对比工具栏' : '展开对比工具栏'}
+          className="workbench-drawer-handle"
           style={{
-            height: '14px',
-            width: '80px',
-            backgroundColor: 'var(--bg-panel)',
-            border: '1px solid var(--border)',
+            height: '20px',
+            width: '116px',
+            backgroundColor: 'var(--bg-surface)',
+            border: '1px solid var(--border-strong)',
             borderTop: 'none',
-            borderRadius: '0 0 6px 6px',
+            borderRadius: '0 0 8px 8px',
             display: 'inline-flex',
             alignItems: 'center',
             justifyContent: 'center',
             cursor: 'pointer',
             padding: 0,
-            color: 'var(--text-secondary)',
-            boxShadow: '0 2px 6px rgba(0,0,0,0.5)',
+            color: 'var(--text-primary)',
+            boxShadow: '0 3px 8px rgba(0,0,0,0.55)',
             clipPath: isToolbarExpanded
-              ? 'polygon(12% 100%, 88% 100%, 100% 0, 0 0)'
-              : 'polygon(0 0, 100% 0, 88% 100%, 12% 100%)',
+              ? 'polygon(10% 100%, 90% 100%, 100% 0, 0 0)'
+              : 'polygon(0 0, 100% 0, 90% 100%, 10% 100%)',
             transition: 'background-color 0.15s, color 0.15s',
           }}
         >
-          {isToolbarExpanded ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+          <span style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.5px' }}>
+            {isToolbarExpanded ? '收起' : '更多'}
+          </span>
         </button>
       </div>
 
@@ -627,65 +919,271 @@ export const Workbench: React.FC<WorkbenchProps> = ({
 
       {/* 底部时间轴与慢放控制台 */}
       <div className="bottom-bar">
-        {/* 第一行：统一时间轴滑块 */}
-        <div className="control-group fx-row-10">
-          <span className="mono-num" style={{ minWidth: '64px' }}>
+        {/* 第一行：统一时间轴滑块与 A-B 局部循环设点 */}
+        <div className="control-group fx-row-8">
+          <span className="mono-num" style={{ minWidth: '58px' }}>
             {tau >= 0 ? `+${tau.toFixed(2)}s` : `${tau.toFixed(2)}s`}
           </span>
-          <input
-            type="range"
-            className="slider"
-            min={timeline.intersectInterval.start}
-            max={timeline.intersectInterval.end}
-            step="0.01"
-            value={tau}
-            onChange={(e) => seekToTau(parseFloat(e.target.value))}
-            style={{ flex: 1 }}
-          />
-          <span className="mono-muted" style={{ minWidth: '110px', textAlign: 'right' }}>
-            {timeline.intersectInterval.start.toFixed(1)}s ~ +{timeline.intersectInterval.end.toFixed(1)}s
+
+          <div className="workbench-slider-wrap" style={{ position: 'relative', flex: 1, display: 'flex', alignItems: 'center' }}>
+            {activeLoopRange && (() => {
+              const span = Math.max(0.01, timeline.intersectInterval.end - timeline.intersectInterval.start);
+              const leftPct = Math.max(0, Math.min(100, ((activeLoopRange.start - timeline.intersectInterval.start) / span) * 100));
+              const rightPct = Math.max(leftPct, Math.min(100, ((activeLoopRange.end - timeline.intersectInterval.start) / span) * 100));
+              return (
+                <>
+                  <div
+                    className="ab-loop-highlight"
+                    style={{
+                      left: `${leftPct}%`,
+                      width: `${Math.max(0, rightPct - leftPct)}%`,
+                    }}
+                    aria-hidden="true"
+                  />
+                  <div
+                    className="ab-loop-marker ab-loop-marker-a"
+                    style={{ left: `${leftPct}%` }}
+                    aria-hidden="true"
+                  />
+                  <div
+                    className="ab-loop-marker ab-loop-marker-b"
+                    style={{ left: `${rightPct}%` }}
+                    aria-hidden="true"
+                  />
+                </>
+              );
+            })()}
+            <input
+              type="range"
+              className="slider"
+              min={timeline.intersectInterval.start}
+              max={timeline.intersectInterval.end}
+              step="0.01"
+              value={tau}
+              onChange={(e) => seekToTau(parseFloat(e.target.value))}
+              style={{ width: '100%', position: 'relative', zIndex: 2 }}
+            />
+          </div>
+
+          <div className="control-group fx-row-4" style={{ flexShrink: 0 }}>
+            <button
+              type="button"
+              onClick={handleSetLoopA}
+              className={`btn btn-loop-a ${activeLoopRange ? 'active' : ''}`}
+              style={{ height: '22px', padding: '0 6px', fontSize: '11px', minWidth: '24px' }}
+              title="将当前时刻设为局部循环起点 A"
+            >
+              A
+            </button>
+            <button
+              type="button"
+              onClick={handleSetLoopB}
+              className={`btn btn-loop-b ${activeLoopRange ? 'active' : ''}`}
+              style={{ height: '22px', padding: '0 6px', fontSize: '11px', minWidth: '24px' }}
+              title="将当前时刻设为局部循环终点 B"
+            >
+              B
+            </button>
+            {activeLoopRange && (
+              <button
+                type="button"
+                onClick={handleClearLoop}
+                className="btn"
+                style={{ height: '22px', width: '22px', padding: 0 }}
+                title="清除 A-B 循环区间"
+                aria-label="清除 A-B 循环"
+              >
+                <X size={11} />
+              </button>
+            )}
+          </div>
+
+          <span className="mono-muted workbench-range-readout" style={{ minWidth: '94px', textAlign: 'right', fontSize: '11px' }}>
+            {activeLoopRange
+              ? `${activeLoopRange.start.toFixed(1)}~${activeLoopRange.end.toFixed(1)}s`
+              : `${timeline.intersectInterval.start.toFixed(1)}s~+${timeline.intersectInterval.end.toFixed(1)}s`}
           </span>
         </div>
 
-        {/* 第二行：播放步进、七档慢放、叠加透明度 */}
+        {/* 第二行：锚点/播控、多粒度步进、折叠倍速、叠加透明度、BPM 菜单 */}
         <div
-          className="workbench-controls-row fx-row-8"
+          className="workbench-controls-row fx-row-6"
           style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
         >
-          <div className="control-group fx-row-4">
-            <button type="button" onClick={playFromPreRoll} className="btn" style={{ padding: '0 8px' }}>
+          <div className="control-group fx-row-4" style={{ flexShrink: 0 }}>
+            <button type="button" onClick={playFromPreRoll} className="btn" style={{ padding: '0 7px' }}>
               <Crosshair size={12} />
               <span>锚点前 1s</span>
             </button>
 
-            <button type="button" onClick={togglePlay} className="btn btn-accent" style={{ padding: '0 9px' }}>
+            <button type="button" onClick={togglePlay} className="btn btn-accent" style={{ padding: '0 8px' }}>
               {isPlaying ? <Pause size={13} /> : <Play size={13} />}
               <span>{isPlaying ? '暂停' : '播放'}</span>
             </button>
           </div>
 
-          <div className="control-group fx-row-4">
-            <span className="mono-muted workbench-rate-label" style={{ fontSize: '11px' }}>倍速</span>
-            <div className="seg-group">
-              {SLOW_MOTION_RATES.map((rate) => (
+          <div className="control-group fx-row-6" style={{ flexShrink: 0 }}>
+            {/* 步进按钮组 + 向上步长菜单 */}
+            <div style={{ position: 'relative' }} data-wb-popup="step">
+              <div className="seg-group">
                 <button
-                  key={rate}
                   type="button"
-                  onClick={() => handleRateChange(rate)}
-                  className={`seg-btn mono-num ${slowMotionRate === rate ? 'active' : ''}`}
-                  style={{ padding: '0 5px', fontSize: '10.5px' }}
+                  onClick={() => stepTau(-1)}
+                  className="seg-btn"
+                  style={{ padding: '0 6px' }}
+                  title={`后退 ${activeStepLabel}`}
+                  aria-label="后退步进"
                 >
-                  {rate}x
+                  <ChevronLeft size={13} />
                 </button>
-              ))}
+                <button
+                  type="button"
+                  onClick={() => setOpenPopup((prev) => (prev === 'step' ? null : 'step'))}
+                  className={`seg-btn ${openPopup === 'step' ? 'active' : ''}`}
+                  style={{ padding: '0 6px', fontSize: '11px' }}
+                  title="选择步进粒度"
+                >
+                  <span className="mono-num">{activeStepLabel}</span>
+                  <ChevronUp
+                    size={11}
+                    style={{
+                      transform: openPopup === 'step' ? 'rotate(180deg)' : 'none',
+                      transition: 'transform 0.15s ease',
+                    }}
+                  />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => stepTau(1)}
+                  className="seg-btn"
+                  style={{ padding: '0 6px' }}
+                  title={`前进 ${activeStepLabel}`}
+                  aria-label="前进步进"
+                >
+                  <ChevronRight size={13} />
+                </button>
+              </div>
+
+              {openPopup === 'step' && (
+                <div
+                  className="fx-col-6 workbench-popup-menu"
+                  style={{ left: '50%', transform: 'translateX(-50%)' }}
+                >
+                  <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                    步进粒度
+                  </div>
+                  <div className="seg-group">
+                    {(
+                      [
+                        { id: 'frame', label: '1帧(0.033s)' },
+                        { id: '50ms', label: '0.05s' },
+                        { id: '100ms', label: '0.10s' },
+                        { id: 'beat-quarter', label: '1/4拍' },
+                        { id: 'beat-half', label: '1/2拍' },
+                        { id: 'custom', label: '自定义' },
+                      ] as { id: StepPreset; label: string }[]
+                    ).map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => {
+                          setStepPreset(opt.id);
+                          if (opt.id !== 'custom') {
+                            setOpenPopup(null);
+                          }
+                        }}
+                        className={`seg-btn ${stepPreset === opt.id ? 'active' : ''}`}
+                        style={{ padding: '0 6px', fontSize: '11px' }}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {stepPreset === 'custom' && (
+                    <div className="fx-row-6" style={{ display: 'flex', alignItems: 'center' }}>
+                      <span className="mono-muted" style={{ fontSize: '11px' }}>秒数:</span>
+                      <input
+                        type="number"
+                        step="0.001"
+                        min="0.005"
+                        className="num-input"
+                        value={customStepInputText}
+                        onChange={(e) => {
+                          setCustomStepInputText(e.target.value);
+                          const val = parseFloat(e.target.value);
+                          if (!isNaN(val) && val >= 0.005) {
+                            setCustomStepSec(val);
+                          }
+                        }}
+                        onBlur={() => {
+                          const val = parseFloat(customStepInputText);
+                          const clamped = !isNaN(val) ? Math.max(0.005, val) : customStepSec;
+                          setCustomStepSec(clamped);
+                          setCustomStepInputText(clamped.toFixed(3));
+                        }}
+                        style={{ width: '64px', height: '22px', fontSize: '11px' }}
+                      />
+                      <span className="mono-muted" style={{ fontSize: '11px' }}>s</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* 折叠倍速向上菜单 */}
+            <div style={{ position: 'relative' }} data-wb-popup="rate">
+              <button
+                type="button"
+                onClick={() => setOpenPopup((prev) => (prev === 'rate' ? null : 'rate'))}
+                className={`btn ${openPopup === 'rate' ? 'btn-active' : ''}`}
+                style={{ padding: '0 7px', fontSize: '11px', height: '24px' }}
+                title="选择慢放倍速"
+              >
+                <span className="mono-num">{slowMotionRate}x</span>
+                <ChevronUp
+                  size={11}
+                  style={{
+                    transform: openPopup === 'rate' ? 'rotate(180deg)' : 'none',
+                    transition: 'transform 0.15s ease',
+                  }}
+                />
+              </button>
+
+              {openPopup === 'rate' && (
+                <div
+                  className="fx-col-6 workbench-popup-menu"
+                  style={{ left: 0 }}
+                >
+                  <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                    播放倍速
+                  </div>
+                  <div className="seg-group">
+                    {SLOW_MOTION_RATES.map((rate) => (
+                      <button
+                        key={rate}
+                        type="button"
+                        onClick={() => {
+                          handleRateChange(rate);
+                          setOpenPopup(null);
+                        }}
+                        className={`seg-btn mono-num ${slowMotionRate === rate ? 'active' : ''}`}
+                        style={{ padding: '0 6px', fontSize: '11px' }}
+                      >
+                        {rate}x
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
-          <div className="control-group" style={{ flexShrink: 0 }}>
+          <div className="control-group fx-row-4" style={{ flexShrink: 0 }}>
             {mode === 'overlay' && (
               <div className="control-group fx-row-4">
                 <span className="mono-muted" style={{ color: 'var(--ch1)', fontSize: '11px' }}>
-                  CH1
+                  视频1
                 </span>
                 <input
                   type="range"
@@ -695,10 +1193,10 @@ export const Workbench: React.FC<WorkbenchProps> = ({
                   step="0.05"
                   value={relativeOpacity}
                   onChange={(e) => setRelativeOpacity(parseFloat(e.target.value))}
-                  style={{ width: '60px' }}
+                  style={{ width: '56px' }}
                 />
                 <span className="mono-muted" style={{ color: 'var(--ch2)', fontSize: '11px' }}>
-                  CH2
+                  视频2
                 </span>
                 <span className="mono-num" style={{ minWidth: '32px', textAlign: 'right', fontSize: '11px' }}>
                   {relativeOpacity > 0 ? `+${relativeOpacity.toFixed(2)}` : relativeOpacity.toFixed(2)}
@@ -707,41 +1205,28 @@ export const Workbench: React.FC<WorkbenchProps> = ({
             )}
 
             {/* 可向上展开的 BPM 对齐策略菜单 */}
-            <div style={{ position: 'relative' }}>
+            <div style={{ position: 'relative' }} data-wb-popup="bpm">
               <button
                 type="button"
-                onClick={() => setIsBpmMenuOpen((prev) => !prev)}
-                className={`tag-badge workbench-sync-badge ${isBpmMenuOpen ? 'ch1' : ''}`}
+                onClick={() => setOpenPopup((prev) => (prev === 'bpm' ? null : 'bpm'))}
+                className={`tag-badge workbench-sync-badge ${openPopup === 'bpm' ? 'ch1' : ''}`}
                 style={{ cursor: 'pointer', fontSize: '11px', height: '24px' }}
                 title="点击选择 BPM 对齐策略"
               >
                 <ChevronUp
                   size={12}
                   style={{
-                    transform: isBpmMenuOpen ? 'rotate(180deg)' : 'none',
+                    transform: openPopup === 'bpm' ? 'rotate(180deg)' : 'none',
                     transition: 'transform 0.15s ease',
                   }}
                 />
                 <span>SYNC {Math.round(timeline.effectiveBpm)}<span className="workbench-bpm-unit"> BPM</span></span>
               </button>
 
-              {isBpmMenuOpen && (
+              {openPopup === 'bpm' && (
                 <div
-                  className="fx-col-6"
-                  style={{
-                    position: 'absolute',
-                    bottom: 'calc(100% + 6px)',
-                    right: 0,
-                    backgroundColor: 'var(--bg-panel)',
-                    border: '1px solid var(--border-strong)',
-                    borderRadius: '6px',
-                    padding: '8px 10px',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    boxShadow: '0 6px 20px rgba(0,0,0,0.8)',
-                    zIndex: 50,
-                    whiteSpace: 'nowrap',
-                  }}
+                  className="fx-col-6 workbench-popup-menu"
+                  style={{ right: 0 }}
                 >
                   <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)' }}>
                     BPM 对齐策略
@@ -751,6 +1236,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
                       type="button"
                       onClick={() => {
                         onBpmStrategyChange?.('none', customBpm);
+                        setOpenPopup(null);
                       }}
                       className={`seg-btn ${bpmStrategy === 'none' ? 'active' : ''}`}
                       style={{ padding: '0 6px', fontSize: '11px' }}
@@ -761,21 +1247,23 @@ export const Workbench: React.FC<WorkbenchProps> = ({
                       type="button"
                       onClick={() => {
                         onBpmStrategyChange?.('left', customBpm);
+                        setOpenPopup(null);
                       }}
                       className={`seg-btn ${bpmStrategy === 'left' ? 'active' : ''}`}
                       style={{ padding: '0 6px', fontSize: '11px' }}
                     >
-                      随 CH1 ({video1.audioInfo?.userBpm || 160})
+                      随 视频1 ({video1.audioInfo?.userBpm || 160})
                     </button>
                     <button
                       type="button"
                       onClick={() => {
                         onBpmStrategyChange?.('right', customBpm);
+                        setOpenPopup(null);
                       }}
                       className={`seg-btn ${bpmStrategy === 'right' ? 'active' : ''}`}
                       style={{ padding: '0 6px', fontSize: '11px' }}
                     >
-                      随 CH2 ({video2.audioInfo?.userBpm || 160})
+                      随 视频2 ({video2.audioInfo?.userBpm || 160})
                     </button>
                     <button
                       type="button"
@@ -829,6 +1317,7 @@ export const Workbench: React.FC<WorkbenchProps> = ({
           initialRate={slowMotionRate}
           initialSoundSource={soundSource}
           currentPlayTau={tau}
+          initialLoopRange={activeLoopRange}
           onBack={() => {
             if (onNavigate) {
               onNavigate('workbench');
