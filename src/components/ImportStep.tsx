@@ -188,6 +188,21 @@ export const ImportStep: React.FC<ImportStepProps> = ({
   });
 
   /**
+   * 通道换片时释放旧 URL 占用的资源：blob 对象 URL 撤销 + PCM 注册表条目清除。
+   * （原生代理 URL 无需 revoke，但其 PCM 注册表条目最高数十 MB，必须显式释放）
+   */
+  const releasePreviousChannelUrl = (index: 1 | 2, nextUrl: string) => {
+    const prevUrl = activeBlobUrlsRef.current[index];
+    if (prevUrl && prevUrl !== nextUrl) {
+      if (prevUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(prevUrl);
+      }
+      dropPcm(prevUrl);
+    }
+    activeBlobUrlsRef.current[index] = nextUrl;
+  };
+
+  /**
    * Android 原生通道选片：获取持久化 content:// URI、本地流式代理地址与流式音轨分析。
    * 原生 MediaMetadataRetriever 解析失败时字段为 0（未知），此处复用 Web 探测器
    * 经本地流式代理二次探测，杜绝假 1920×1080 默认值污染几何标定数学。
@@ -202,6 +217,7 @@ export const ImportStep: React.FC<ImportStepProps> = ({
       }
 
       const url = picked.streamUrl;
+      releasePreviousChannelUrl(index, url);
       const baseItem: LoadedVideoItem = {
         nativeUri: picked.uri,
         url,
@@ -254,9 +270,10 @@ export const ImportStep: React.FC<ImportStepProps> = ({
             duration: finalDur,
             sampleRate: decoded.sampleRate,
             hasAudioTrack: true,
-            // 超过原生 10 分钟提取上限的音频被截断：BPM 仍由真实片段算出，
-            // 但显式标记降级提示用户波形/测速可能未覆盖全曲
-            audioDegraded: Boolean(audioRes.truncated),
+            audioDegraded: false,
+            // 超过原生 10 分钟提取上限：BPM/波形来自真实片段（非占位），但显式
+            // 标记截断，UI 据此提示“测速仅覆盖前 10 分钟”
+            audioTruncated: Boolean(audioRes.truncated),
             detectedBpm: decoded.detectedBpm,
             userBpm: decoded.detectedBpm,
             anchorTime: Math.min(1.0, Math.max(0.25, finalDur / 4)),
@@ -294,12 +311,7 @@ export const ImportStep: React.FC<ImportStepProps> = ({
     if (!file) return;
 
     const url = URL.createObjectURL(file);
-    const prevUrl = activeBlobUrlsRef.current[index];
-    if (prevUrl && prevUrl.startsWith('blob:') && prevUrl !== url) {
-      URL.revokeObjectURL(prevUrl);
-      dropPcm(prevUrl); // 释放被替换视频的 PCM 注册表数据
-    }
-    activeBlobUrlsRef.current[index] = url;
+    releasePreviousChannelUrl(index, url);
 
     // 1. 乐观即时挂载：一旦拿到 File 对象立即更新卡片 UI，消除界面假死与「未载入」停滞
     //    未知字段一律用 0 哨兵（不再使用 10/1920 魔法占位）
@@ -383,7 +395,9 @@ export const ImportStep: React.FC<ImportStepProps> = ({
     const chCode = `视频${index}`;
     const badgeClass = index === 1 ? 'ch1' : 'ch2';
     const loadedClass = item ? (index === 1 ? 'loaded-ch1' : 'loaded-ch2') : '';
-    const degraded = Boolean(item?.audioInfo?.audioDegraded);
+    const audio = item?.audioInfo;
+    const degraded = Boolean(audio?.audioDegraded);
+    const truncated = !degraded && Boolean(audio?.audioTruncated);
 
     return (
       <div
@@ -488,7 +502,16 @@ export const ImportStep: React.FC<ImportStepProps> = ({
                       title="音频解析失败或超限，BPM 为占位值：请在标定步骤手动输入或 TAP 测速"
                     >
                       <AlertTriangle size={12} />
-                      <span>{item.audioInfo?.detectedBpm ?? '--'} 占位</span>
+                      <span>{audio?.detectedBpm ?? '--'} 占位</span>
+                    </span>
+                  ) : truncated ? (
+                    <span
+                      className="control-group fx-row-4"
+                      style={{ color: 'var(--text-muted)' }}
+                      title="音频超过原生提取安全上限，测速与波形仅基于前 10 分钟真实数据"
+                    >
+                      <AlertTriangle size={12} />
+                      <span>{audio?.detectedBpm ?? '--'} 截断</span>
                     </span>
                   ) : (
                     `${item.audioInfo?.detectedBpm ?? '--'} BPM`

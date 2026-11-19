@@ -23,6 +23,7 @@ export interface VideoAudioInfo {
   sampleRate: number; // 音频采样率
   hasAudioTrack: boolean; // 源视频是否真实存在可解析的音频轨
   audioDegraded?: boolean; // true = 解析失败/超限降级，detectedBpm 与 waveform 均为占位数据
+  audioTruncated?: boolean; // true = 原生提取达 10 分钟安全上限被截断：数据真实但仅覆盖前段
   detectedBpm: number; // 算法自动测算的 BPM（audioDegraded 时为 DEFAULT_BPM 占位）
   userBpm: number; // 用户确认或修改的 BPM
   anchorTime: number; // 对拍锚点时间戳 (秒)

@@ -3,16 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-    <!--
-      内容安全策略：script-src 收紧为 'self'（启动诊断脚本已拆分为外部文件，
-      全库无内联脚本与 eval），style-src 因组件大量使用内联样式属性保留 unsafe-inline。
-      media/connect 允许本机代理（Android 原生流式视频/PCM）与 blob 源，
-      connect 另放行 GitHub Releases 更新检查与开发服务器 HMR。
-    -->
-    <meta
-      http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: http://127.0.0.1:* http://localhost:*; connect-src 'self' blob: data: http://127.0.0.1:* http://localhost:* ws://localhost:* https://api.github.com; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'"
-    />
+    <!-- CSP 由 vite.config.ts 的 build-only 插件注入：开发模式下 @vitejs/plugin-react
+         依赖内联 preamble 脚本，静态 CSP 会将其拦截导致 dev 服务不可用 -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Wotagei-Compare 同台慢放对比</title>
     <script src="/boot-diagnostics.js"></script>

@@ -228,12 +228,19 @@ export function detectBpmFromPcm(
     }
   }
 
-  // 6. 倍频折叠兜底（评分制）：粗峰 < 100 BPM 时与 2 倍频候选直接比较
-  // 谐波梳状自相关得分，仅在倍频显著更优时才折叠——避免把真实的慢速曲目
-  // （如 90 BPM 抒情曲）无脑翻倍成 180。> 220 的情况在搜索域内不会出现，保留防御。
+  // 6. 倍频折叠兜底（去先验比较）：粗峰 < 100 BPM 时与 2 倍频候选比较
+  // 「纯梳状自相关得分」（剔除 WOTA 速度先验权重）。若直接比较混合得分，
+  // 168 中心先验在 95/190 处的权重差约 14 倍，会淹没原始自相关的判断，
+  // 使真实慢速曲目（如 90 BPM 抒情曲）依然必被折叠成 180。
+  // 去先验后：真实慢速曲目在 1T 与 2T 处自相关接近持平（严格 > 不折叠）；
+  // 半频误检（真 168 被粗扫判为 84）的 2T 峰值通常高于 1T，正确折叠。
   if (calculatedBpm < 100) {
+    const rawScore = (bpm: number) => {
+      const prior = calculateTempoPriorWeight(bpm);
+      return prior > 0 ? scoreCandidateBpm(bpm) / prior : scoreCandidateBpm(bpm);
+    };
     const doubledBpm = Math.min(maxBpm, calculatedBpm * 2);
-    if (scoreCandidateBpm(doubledBpm) > scoreCandidateBpm(calculatedBpm)) {
+    if (rawScore(doubledBpm) > rawScore(calculatedBpm)) {
       calculatedBpm = doubledBpm;
     }
   } else if (calculatedBpm > 220) {

@@ -104,13 +104,14 @@ export async function decodeAudioFromFile(file: File): Promise<DecodedAudioResul
     return degradedAudioResult('oversize');
   }
 
-  const arrayBuffer = await readFileAsArrayBuffer(file);
-  // 借助浏览器 AudioContext 解码容器中的音频流
-  const AudioCtxConstructor =
-    window.AudioContext ||
-    (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-  const audioCtx = new AudioCtxConstructor();
+  let audioCtx: AudioContext | null = null;
   try {
+    const arrayBuffer = await readFileAsArrayBuffer(file);
+    // 借助浏览器 AudioContext 解码容器中的音频流
+    const AudioCtxConstructor =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    audioCtx = new AudioCtxConstructor();
     const audioBuffer = await safeDecodeAudioData(audioCtx, arrayBuffer);
 
     const duration = audioBuffer.duration;
@@ -147,7 +148,10 @@ export async function decodeAudioFromFile(file: File): Promise<DecodedAudioResul
   } catch {
     return degradedAudioResult('decode-error');
   } finally {
-    await audioCtx.close().catch(() => {});
+    // 读取/构造器本身也可能抛出，统一在 finally 中判空关闭
+    if (audioCtx) {
+      await audioCtx.close().catch(() => {});
+    }
   }
 }
 
